@@ -135,6 +135,46 @@ test('packager: task snapshot hash changes when task graph is modified', () => {
   assert.notStrictEqual(manifest1.taskSnapshotHash, manifest2.taskSnapshotHash);
 });
 
+test('packager: derives requirementVersion from supersedes and guarantees task order independence', () => {
+  const sentinel = new WorkspaceSentinel(process.cwd());
+  const packager = new HandoffPackager();
+  const ledger = new InputLedger();
+  const r1 = ledger.appendUserMessage('Goal: Export report');
+  ledger.appendUserMessage('Amend: Do not export PDF', r1.inputId);
+
+  // Requirement contract version is 2
+  const graphA = new TaskGraph();
+  graphA.addTask({ taskId: 't1', requirementId: 'req-1', title: 'Task 1' });
+  graphA.addTask({ taskId: 't2', requirementId: 'req-1', title: 'Task 2' });
+
+  const graphB = new TaskGraph();
+  graphB.addTask({ taskId: 't2', requirementId: 'req-1', title: 'Task 2' });
+  graphB.addTask({ taskId: 't1', requirementId: 'req-1', title: 'Task 1' });
+
+  const manifestA = packager.createManifest({
+    runId: 'run-order-a',
+    epoch: 1,
+    sourceSessionId: 'sess-a',
+    targetModel: { provider: 'openai', model: 'gpt-5' },
+    ledger,
+    taskGraph: graphA,
+    sentinel
+  });
+
+  const manifestB = packager.createManifest({
+    runId: 'run-order-b',
+    epoch: 1,
+    sourceSessionId: 'sess-b',
+    targetModel: { provider: 'openai', model: 'gpt-5' },
+    ledger,
+    taskGraph: graphB,
+    sentinel
+  });
+
+  assert.strictEqual(manifestA.requirementVersion, 2);
+  assert.strictEqual(manifestA.taskSnapshotHash, manifestB.taskSnapshotHash);
+});
+
 test('workspace: re-exports Sentinel and Packager classes', () => {
   assert.ok(typeof WorkspaceExports.WorkspaceSentinel === 'function');
   assert.ok(typeof WorkspaceExports.HandoffPackager === 'function');

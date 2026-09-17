@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { computeSha256 } from '../../../protocol/src/index.ts';
 import type { WorkspaceFingerprint } from '../../../protocol/src/types.ts';
@@ -6,7 +7,7 @@ export class WorkspaceSentinel {
   private workingDir: string;
 
   constructor(workingDir: string) {
-    this.workingDir = workingDir;
+    this.workingDir = path.resolve(workingDir);
   }
 
   public captureFingerprint(): WorkspaceFingerprint {
