@@ -19,6 +19,7 @@ export class InputLedger {
       metadata
     };
     validateInputRecord(record);
+    Object.freeze(record);
     this.records.push(record);
     return record;
   }
@@ -33,6 +34,7 @@ export class InputLedger {
       metadata
     };
     validateInputRecord(record);
+    Object.freeze(record);
     this.records.push(record);
     return record;
   }

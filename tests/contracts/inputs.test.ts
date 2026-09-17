@@ -58,3 +58,21 @@ test('ledger: empty ledger head hash is deterministic', () => {
   assert.strictEqual(ledger1.getHeadHash(), ledger2.getHeadHash());
   assert.strictEqual(ledger1.getHeadHash().length, 64);
 });
+
+test('supersedes: extracts Chinese forbidden items without whitespace and preserves combined goals', () => {
+  const ledger = new InputLedger();
+  ledger.appendUserMessage('构建计算器模块。不要使用eval，禁止修改全局状态');
+  const contract = deriveContractFromLedger(ledger);
+
+  assert.ok(contract.forbiddenItems.includes('使用eval'));
+  assert.ok(contract.forbiddenItems.includes('修改全局状态'));
+  assert.ok(contract.goals.includes('构建计算器模块'));
+});
+
+test('ledger: stored records are frozen against mutation', () => {
+  const ledger = new InputLedger();
+  const record = ledger.appendUserMessage('Immutable requirement');
+  assert.throws(() => {
+    (record as any).rawContent = 'Tampered content';
+  }, /TypeError/);
+});

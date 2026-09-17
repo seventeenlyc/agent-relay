@@ -13,14 +13,30 @@ export function deriveContractFromLedger(ledger: InputLedger): RequirementContra
     const text = record.rawContent;
 
     // Detect explicit forbidden items (e.g. "do not ...", "不要 ...", "禁止 ...")
-    const forbiddenMatch = text.match(/(?:do not|don't|不要|禁止)\s+([^,，.。\n]+)/i);
-    if (forbiddenMatch && forbiddenMatch[1]) {
-      const item = forbiddenMatch[1].trim();
-      if (!forbiddenItems.includes(item)) {
-        forbiddenItems.push(item);
+    // Support zero-whitespace after Chinese keywords as well as English
+    const forbiddenMatches = [...text.matchAll(/(?:(?:do not|don't)\s+|(?:不要|禁止)\s*)([^,，.。\n]+)/gi)];
+    if (forbiddenMatches.length > 0) {
+      for (const m of forbiddenMatches) {
+        if (m[1]) {
+          const item = m[1].trim();
+          if (!forbiddenItems.includes(item)) {
+            forbiddenItems.push(item);
+          }
+        }
       }
-    } else {
-      goals.push(text);
+    }
+
+    // Also extract goals: clauses that do not contain forbidden keywords
+    const clauses = text.split(/[.。\n]+/).map((s) => s.trim()).filter(Boolean);
+    let addedGoal = false;
+    for (const clause of clauses) {
+      if (!/(?:do not|don't|不要|禁止)/i.test(clause)) {
+        goals.push(clause);
+        addedGoal = true;
+      }
+    }
+    if (!addedGoal && forbiddenMatches.length === 0) {
+      goals.push(text.trim());
     }
 
     if (record.supersedesId) {
