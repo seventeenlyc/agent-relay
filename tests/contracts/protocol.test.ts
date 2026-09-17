@@ -8,6 +8,10 @@ test('protocol: canonical JSON serialization and SHA-256 hashing', () => {
   const objB = { a: 1, b: 2 };
   assert.strictEqual(serializeCanonicalJson(objA), serializeCanonicalJson(objB));
   assert.strictEqual(computeSha256(serializeCanonicalJson(objA)), computeSha256(serializeCanonicalJson(objB)));
+
+  const objWithUndefined = { b: 2, a: 1, c: undefined };
+  assert.strictEqual(serializeCanonicalJson(objWithUndefined), '{"a":1,"b":2}');
+  assert.strictEqual(serializeCanonicalJson(undefined), 'null');
 });
 
 test('protocol: input record validation rejects missing hash or empty content', () => {
@@ -18,6 +22,14 @@ test('protocol: input record validation rejects missing hash or empty content', 
     rawContent: ''
   };
   assert.throws(() => validateInputRecord(invalidRecord), /rawContent cannot be empty/);
+
+  const missingHashRecord: Partial<InputRecord> = {
+    inputId: 'in-1',
+    source: 'human',
+    timestamp: Date.now(),
+    rawContent: 'Valid content'
+  };
+  assert.throws(() => validateInputRecord(missingHashRecord), /sha256Hash is required/);
 
   const validRecord: InputRecord = {
     inputId: 'in-1',
