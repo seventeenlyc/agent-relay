@@ -123,12 +123,24 @@ test('guard: supports open scope, Windows backslashes, path traversal, and Chine
 
   // Windows backslash normalized
   assert.doesNotThrow(() => guard.verifyPathAccess('packages\\controller\\src\\index.ts'));
+  // Leading slash normalized
+  assert.doesNotThrow(() => guard.verifyPathAccess('/packages/controller/src/index.ts'));
   // Exact file allowed
   assert.doesNotThrow(() => guard.verifyPathAccess('packages/protocol/src/types.ts'));
   // Prefix collision prevented (e.g. packages/controller-evil)
   assert.throws(() => guard.verifyPathAccess('packages/controller-evil/exploit.ts'), /Scope violation/);
   // Directory traversal outside scope prevented
   assert.throws(() => guard.verifyPathAccess('packages/controller/../../outside.ts'), /Scope violation/);
+});
+
+test('tasks: returned task items are defensive copies', () => {
+  const graph = new TaskGraph();
+  graph.addTask({ taskId: 't1', requirementId: 'req-1', title: 'Task 1' });
+  const retrieved = graph.getTask('t1')!;
+  retrieved.status = 'completed'; // Attempt direct mutation
+
+  // Internal state must remain unchanged
+  assert.strictEqual(graph.getTask('t1')?.status, 'pending');
 });
 
 test('controller/index: exports TaskGraph and ScopeGuard', () => {

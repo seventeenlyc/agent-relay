@@ -22,12 +22,12 @@ export class ScopeGuard {
     }
 
     const normalized = filePath.replace(/\\/g, '/');
-    const cleanPath = path.posix.normalize(normalized).replace(/^\.\//, '');
+    const cleanPath = path.posix.normalize(normalized).replace(/^\.\//, '').replace(/^\/+/, '');
 
     const isAllowed = this.contract.scopePaths.some((p) => {
-      const normP = path.posix.normalize(p.replace(/\\/g, '/')).replace(/^\.\//, '');
+      const normP = path.posix.normalize(p.replace(/\\/g, '/')).replace(/^\.\//, '').replace(/^\/+/, '');
       if (normP === '.' || normP === '') {
-        return !cleanPath.startsWith('../');
+        return cleanPath !== '..' && !cleanPath.startsWith('../');
       }
       if (cleanPath === normP) {
         return true;
@@ -56,7 +56,7 @@ export class ScopeGuard {
       // Check full string and stripped keyword variant (e.g. "禁止修改" -> "修改")
       const stripped = trimmed.replace(/^(?:do not|don't|不要|禁止)\s*/i, '').trim();
 
-      if (lowerAction.includes(trimmed) || (stripped.length > 0 && lowerAction.includes(stripped))) {
+      if (lowerAction.includes(trimmed) || (stripped.length >= 2 && lowerAction.includes(stripped))) {
         throw new Error(`ScopeGuard: Forbidden item detected. Action "${actionDescription}" violates "${forbidden}"`);
       }
     }

@@ -73,7 +73,15 @@ export class TaskGraph {
   }
 
   public getTask(taskId: string): TaskItem | undefined {
-    return this.tasks.get(taskId);
+    const task = this.tasks.get(taskId);
+    return task
+      ? {
+          ...task,
+          dependencies: [...task.dependencies],
+          allowedPaths: [...task.allowedPaths],
+          expectedArtifacts: [...task.expectedArtifacts]
+        }
+      : undefined;
   }
 
   public updateTaskStatus(taskId: string, status: TaskStatus): void {
@@ -126,10 +134,22 @@ export class TaskGraph {
   }
 
   public getAllTasks(): TaskItem[] {
-    return Array.from(this.tasks.values());
+    return Array.from(this.tasks.values()).map((t) => ({
+      ...t,
+      dependencies: [...t.dependencies],
+      allowedPaths: [...t.allowedPaths],
+      expectedArtifacts: [...t.expectedArtifacts]
+    }));
   }
 
   public getPendingTasks(): TaskItem[] {
-    return Array.from(this.tasks.values()).filter((t) => t.status === 'pending');
+    return Array.from(this.tasks.values())
+      .filter((t) => t.status === 'pending')
+      .map((t) => ({
+        ...t,
+        dependencies: [...t.dependencies],
+        allowedPaths: [...t.allowedPaths],
+        expectedArtifacts: [...t.expectedArtifacts]
+      }));
   }
 }
