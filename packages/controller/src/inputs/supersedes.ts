@@ -8,8 +8,19 @@ export function deriveContractFromLedger(ledger: InputLedger): RequirementContra
   const sourceInputIds: string[] = [];
   let version = 1;
 
+  const supersededIds = new Set<string>();
+  for (const record of humanInputs) {
+    if (record.supersedesId) {
+      supersededIds.add(record.supersedesId);
+      version++;
+    }
+  }
+
   for (const record of humanInputs) {
     sourceInputIds.push(record.inputId);
+    if (supersededIds.has(record.inputId)) {
+      continue;
+    }
     const text = record.rawContent;
 
     // Detect explicit forbidden items (e.g. "do not ...", "不要 ...", "禁止 ...")
@@ -37,10 +48,6 @@ export function deriveContractFromLedger(ledger: InputLedger): RequirementContra
     }
     if (!addedGoal && forbiddenMatches.length === 0) {
       goals.push(text.trim());
-    }
-
-    if (record.supersedesId) {
-      version++;
     }
   }
 
