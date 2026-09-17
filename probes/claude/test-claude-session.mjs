@@ -15,8 +15,9 @@ import readline from 'node:readline';
  * @param {boolean} [options.bare] - Use minimal --bare mode
  * @param {boolean} [options.includeHookEvents] - Include hook lifecycle events
  * @param {boolean} [options.noPersistence] - Disable session persistence
+ * @param {number} [options.timeoutMs=60000] - Process execution timeout in milliseconds
  * @param {string[]} [options.extraArgs] - Additional CLI arguments
- * @returns {Promise<{ sessionId: string, code: number, durationMs: number, events: any[], rawLines: string[], stderrLines: string[] }>}
+ * @returns {Promise<{ sessionId: string, code: number, durationMs: number, timedOut: boolean, events: any[], rawLines: string[], stderrLines: string[] }>}
  */
 export function runClaudeSession({
   sessionId,
@@ -28,6 +29,7 @@ export function runClaudeSession({
   bare = false,
   includeHookEvents = false,
   noPersistence = false,
+  timeoutMs = 60000,
   extraArgs = []
 }) {
   const startTime = Date.now();
@@ -84,12 +86,41 @@ export function runClaudeSession({
     stdio: [inputFormat === 'stream-json' ? 'pipe' : 'ignore', 'pipe', 'pipe']
   });
 
+  // Defensive stdin error handling to prevent uncaught EPIPE if process terminates early
+  if (proc.stdin) {
+    proc.stdin.on('error', (err) => {
+      if (err.code !== 'EPIPE') {
+        console.warn(`  [stdin:warning] ${err.message}`);
+      }
+    });
+  }
+
   const rlStdout = readline.createInterface({ input: proc.stdout });
   const rlStderr = readline.createInterface({ input: proc.stderr });
 
   const events = [];
   const rawLines = [];
   const stderrLines = [];
+  let timedOut = false;
+  let timeoutTimer = null;
+
+  if (timeoutMs && timeoutMs > 0) {
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      console.warn(`[Timeout] Session ${effectiveSessionId} exceeded ${timeoutMs}ms limit, terminating...`);
+      try {
+        proc.kill('SIGTERM');
+        // Force kill fallback if SIGTERM does not close in 2 seconds
+        setTimeout(() => {
+          try {
+            proc.kill('SIGKILL');
+          } catch {}
+        }, 2000);
+      } catch (killErr) {
+        console.error('[Timeout] Failed to kill process:', killErr);
+      }
+    }, timeoutMs);
+  }
 
   rlStdout.on('line', (line) => {
     rawLines.push(line);
@@ -122,24 +153,39 @@ export function runClaudeSession({
         content: prompt
       }
     }) + '\n';
-    proc.stdin.write(payload);
-    proc.stdin.end();
+    try {
+      proc.stdin.write(payload);
+      proc.stdin.end();
+    } catch (writeErr) {
+      if (writeErr.code !== 'EPIPE') {
+        console.warn(`  [stdin:writeErr] ${writeErr.message}`);
+      }
+    }
   }
 
   return new Promise((resolve, reject) => {
     proc.on('close', (code) => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
       const durationMs = Date.now() - startTime;
-      console.log(`[Exit] Process exited with code ${code} (${durationMs}ms)`);
+      console.log(`[Exit] Process exited with code ${code} (${durationMs}ms)${timedOut ? ' [TIMED_OUT]' : ''}`);
       resolve({
         sessionId: effectiveSessionId,
         code,
         durationMs,
+        timedOut,
         events,
         rawLines,
         stderrLines
       });
     });
     proc.on('error', (err) => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
       console.error('[Error] Spawn failed:', err);
       reject(err);
     });
@@ -200,11 +246,12 @@ async function runSuite() {
   // Test 2: Parameter Variations (--model and --effort)
   console.log(`\n>>> TEST 2: Parameter variations (--effort low and --model)`);
   const test2SessionId = randomUUID();
+  const testModel = process.env.CLAUDE_TEST_MODEL || 'gemini-3.8-flash-high';
   const res2 = await runClaudeSession({
     sessionId: test2SessionId,
     noPersistence: true,
     effort: 'low',
-    model: 'gemini-3.8-flash-high',
+    model: testModel,
     prompt: 'Respond with exactly "PROBE_EFFORT_LOW_OK" and nothing else.'
   });
 
