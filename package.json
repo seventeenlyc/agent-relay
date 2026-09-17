@@ -1,0 +1,11 @@
+{
+  "name": "agent-relay-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/**/*.test.ts",
+    "test:contracts": "node --experimental-strip-types --test tests/contracts/*.test.ts",
+    "test:scenarios": "node --experimental-strip-types --test tests/scenarios/*.test.ts"
+  }
+}
