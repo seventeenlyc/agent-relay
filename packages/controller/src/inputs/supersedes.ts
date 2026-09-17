@@ -51,14 +51,15 @@ export function deriveContractFromLedger(ledger: InputLedger): RequirementContra
     }
   }
 
-  return {
+  const contract: RequirementContract = {
     requirementId: 'req-root',
     version,
-    goals,
-    scopePaths: [],
-    forbiddenItems,
-    acceptanceCriteria: ['All tests green', 'No forbidden items violated'],
-    sourceInputIds,
+    goals: Object.freeze([...goals]) as string[],
+    scopePaths: Object.freeze([]) as string[],
+    forbiddenItems: Object.freeze([...forbiddenItems]) as string[],
+    acceptanceCriteria: Object.freeze(['All tests green', 'No forbidden items violated']) as string[],
+    sourceInputIds: Object.freeze([...sourceInputIds]) as string[],
     status: 'active'
   };
+  return Object.freeze(contract);
 }

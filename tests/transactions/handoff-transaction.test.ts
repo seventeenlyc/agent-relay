@@ -155,6 +155,22 @@ test('state-machine: rejects invalid transitions and runId mismatch', () => {
       }),
     /Run ID mismatch/
   );
+
+  // Mismatched session ID on ACK
+  assert.throws(
+    () =>
+      sm.receiveAck({
+        handoffId: 'h-test',
+        runId: 'run-guard',
+        newSessionId: 'wrong-session-id',
+        effectiveModel: { provider: 'p', model: 'm' },
+        verifiedInputHeadHash: 'h1',
+        verifiedTaskSnapshotHash: 'h2',
+        verifiedWorkspaceHash: 'h3',
+        ackTimestamp: Date.now()
+      }),
+    /Session ID mismatch/
+  );
 });
 
 test('state-machine: pause and cancel transitions', () => {

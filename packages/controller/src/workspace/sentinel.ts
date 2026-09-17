@@ -54,7 +54,7 @@ export class WorkspaceSentinel {
     dirtyFiles.sort();
     untrackedFiles.sort();
 
-    const treeHash = computeSha256(`${commitHash}|${dirtyFiles.join(',')}|${untrackedFiles.join(',')}`);
+    const treeHash = computeSha256(`${commitHash}\0${dirtyFiles.join('\0')}\0${untrackedFiles.join('\0')}`);
     return {
       commitHash,
       untrackedFiles,

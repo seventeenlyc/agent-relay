@@ -11,6 +11,9 @@ export class LoopDetector {
   public recordFailure(failureSignature: string): void {
     const hash = computeSha256(failureSignature.trim());
     this.failureHashes.push(hash);
+    if (this.failureHashes.length > 100) {
+      this.failureHashes = this.failureHashes.slice(-100);
+    }
   }
 
   public isLoopBlocked(): boolean {

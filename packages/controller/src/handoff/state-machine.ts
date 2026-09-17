@@ -75,6 +75,9 @@ export class HandoffStateMachine {
     if (ack.runId && ack.runId !== this.runId) {
       throw new Error(`Run ID mismatch: expected ${this.runId}, got ${ack.runId}`);
     }
+    if (ack.newSessionId && ack.newSessionId !== this.currentOwner) {
+      throw new Error(`Session ID mismatch: expected ${this.currentOwner}, got ${ack.newSessionId}`);
+    }
     this.pendingAck = ack;
     this.state = 'READY';
   }
