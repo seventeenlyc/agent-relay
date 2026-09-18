@@ -282,11 +282,20 @@ export class DshProcessRunner {
 
     try {
       await this.sendRequest('shutdown', {}, timeoutMs);
-      // Wait for process to exit cleanly following the shutdown RPC
-      await Promise.race([
-        exitPromise,
-        new Promise((resolve) => setTimeout(resolve, 500))
-      ]);
+      let raceTimer: NodeJS.Timeout | null = null;
+      try {
+        await Promise.race([
+          exitPromise,
+          new Promise((resolve) => {
+            raceTimer = setTimeout(resolve, 500);
+            raceTimer.unref();
+          })
+        ]);
+      } finally {
+        if (raceTimer) {
+          clearTimeout(raceTimer);
+        }
+      }
     } catch {
       // Ignore shutdown RPC error and terminate
     }
