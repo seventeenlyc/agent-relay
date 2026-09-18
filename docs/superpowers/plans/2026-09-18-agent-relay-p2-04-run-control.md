@@ -284,6 +284,20 @@ test('store: WAL makes committed writes visible to a separate process (V22)', ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('store: a failed construction releases the database handle', () => {
+  const dir = makeTempDir();
+  const dbPath = path.join(dir, 'relay.db');
+  fs.writeFileSync(dbPath, 'this is not a sqlite database', 'utf8');
+
+  assert.throws(() => new RelayDatabase({ dbPath }), /file is not a database/);
+
+  // 构造失败必须释放已打开的句柄，否则 Windows 上该文件会被锁定到进程结束。
+  assert.doesNotThrow(
+    () => fs.rmSync(dir, { recursive: true, force: true }),
+    'the handle must be released even though construction threw'
+  );
+});
+
 test('store: lease table enforces single owner with monotonic epoch CAS', () => {
   const db = new RelayDatabase({ dbPath: ':memory:' });
   const store = new RunStore(db);
@@ -498,10 +512,16 @@ export class RelayDatabase {
       fs.mkdirSync(path.dirname(options.dbPath), { recursive: true });
     }
     this.handle = new DatabaseSync(options.dbPath);
-    this.handle.exec('PRAGMA journal_mode = WAL');
-    this.handle.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 3000}`);
-    this.handle.exec('PRAGMA foreign_keys = ON');
-    this.migrate();
+    try {
+      this.handle.exec('PRAGMA journal_mode = WAL');
+      this.handle.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 3000}`);
+      this.handle.exec('PRAGMA foreign_keys = ON');
+      this.migrate();
+    } catch (err) {
+      // 构造失败也必须释放原生句柄：Windows 上未关闭的句柄会锁住文件
+      try { this.handle.close(); } catch { /* 保留原始错误 */ }
+      throw err;
+    }
   }
 
   public migrate(): void {
@@ -6013,23 +6033,59 @@ test('cli: control actions persist the intent before printing confirmation', asy
   const { db, store } = seed(dataDir);
   db.close();
 
-  const paused = capture();
-  assert.strictEqual(await runCli(['pause', '--data-dir', dataDir], { io: paused.io }), 0);
-  assert.match(paused.out.join('\n'), /watermark 1/);
+  const dbPath = path.join(dataDir, 'relay.db');
+  const out: string[] = [];
+  const err: string[] = [];
+  const pendingAtPrintTime: number[] = [];
+  const io: CliIo = {
+    out: (line) => {
+      // 在打印回调里用独立连接回读：确认输出的那一刻，意图必须已经在库里。
+      // 若只在整个 runCli 返回之后再查，就无法区分「先落库后打印」与「先打印后落库」。
+      const probeDb = new RelayDatabase({ dbPath });
+      pendingAtPrintTime.push(new RunStore(probeDb).listPendingIntents('run-cli-1').length);
+      probeDb.close();
+      out.push(line);
+    },
+    err: (line) => err.push(line)
+  };
 
-  const inspection = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
+  assert.strictEqual(await runCli(['pause', '--data-dir', dataDir], { io }), 0);
+  assert.match(out.join('\n'), /watermark 1/);
+  assert.deepStrictEqual(
+    pendingAtPrintTime,
+    [1],
+    'the intent must already be durable when the confirmation is printed'
+  );
+
+  assert.strictEqual(await runCli(['stop', '--data-dir', dataDir], { io }), 0);
+
+  const inspection = new RelayDatabase({ dbPath });
   const inspectionStore = new RunStore(inspection);
   const pending = inspectionStore.listPendingIntents('run-cli-1');
-  assert.strictEqual(pending.length, 1, 'the intent must already be durable when confirmation is printed');
+  assert.deepStrictEqual(pendingAtPrintTime, [1, 2], 'each confirmation must follow its own persisted intent');
+  assert.strictEqual(pending.length, 2);
   assert.strictEqual(pending[0].kind, 'pause_next_node');
   assert.strictEqual(pending[0].watermark, 1);
-
-  const stopped = capture();
-  assert.strictEqual(await runCli(['stop', '--data-dir', dataDir], { io: stopped.io }), 0);
-  assert.strictEqual(inspectionStore.listPendingIntents('run-cli-1').length, 2);
+  assert.strictEqual(pending[1].kind, 'stop_now');
   assert.strictEqual(inspectionStore.getLatestIntentWatermark('run-cli-1'), 2);
 
   inspection.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('cli: an unreadable store returns an exit code instead of throwing', async () => {
+  const dataDir = tempDir();
+  fs.writeFileSync(path.join(dataDir, 'relay.db'), 'this is not a sqlite database', 'utf8');
+
+  const { io, out, err } = capture();
+  const code = await runCli(['status', '--data-dir', dataDir], { io });
+
+  assert.strictEqual(typeof code, 'number');
+  assert.strictEqual(code, 1);
+  assert.strictEqual(out.length, 0);
+  assert.match(err.join('\n'), /^error: /m);
+  assert.doesNotMatch(err.join('\n'), /at Object\.|node:internal/);
+
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -6038,7 +6094,25 @@ test('cli: run selection fails with exit code 2 when no run or several runs exis
   const missing = capture();
   assert.strictEqual(await runCli(['status', '--data-dir', empty], { io: missing.io }), 2);
   assert.match(missing.err.join('\n'), /no run/i);
+  // 读命令不得创建库：否则「没有 run」会变成「有一个空 run」
+  assert.strictEqual(
+    fs.existsSync(path.join(empty, 'relay.db')),
+    false,
+    'a command against an absent store must not create one'
+  );
+
+  // 写命令同样不得创建库
+  const emptyForWrite = tempDir();
+  const missingWrite = capture();
+  assert.strictEqual(await runCli(['pause', '--data-dir', emptyForWrite], { io: missingWrite.io }), 2);
+  assert.strictEqual(
+    fs.existsSync(path.join(emptyForWrite, 'relay.db')),
+    false,
+    'a control command against an absent store must not create one'
+  );
+
   fs.rmSync(empty, { recursive: true, force: true });
+  fs.rmSync(emptyForWrite, { recursive: true, force: true });
 
   const ambiguous = tempDir();
   const { db } = seed(ambiguous, 'run-cli-1');
@@ -6354,7 +6428,7 @@ function resolveRun(store: RunStore, requested: string | undefined): RunRecord {
     throw new NotFoundError('no run found; specify --run or start a run first');
   }
   if (candidates.length > 1) {
-    throw new NotFoundError(`several active runs found; specify one with --run (${candidates.map((r) => r.runId).join(', ')})`);
+    throw new NotFoundError(`several runs found; specify one with --run (${candidates.map((r) => r.runId).join(', ')})`);
   }
   return candidates[0];
 }
@@ -6408,60 +6482,66 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   }
 
   const dataDir = resolveDataDir(args.dataDir, env);
-  const opened = openStore(dataDir);
-  if (!opened) {
-    io.err(`no run found: ${path.join(dataDir, 'relay.db')} does not exist`);
-    return 2;
-  }
-  const { db, store } = opened;
 
   try {
-    const run = resolveRun(store, args.runId);
+    // 打开库也在 try 内：库损坏时 openStore 会抛错，必须转成退出码而不是抛给调用方
+    const opened = openStore(dataDir);
+    if (!opened) {
+      io.err(`no run found: ${path.join(dataDir, 'relay.db')} does not exist`);
+      return 2;
+    }
+    const { db, store } = opened;
 
-    switch (args.command) {
-      case 'status': {
-        const view = buildRunStatus(store, run.runId);
-        io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
-        return 0;
-      }
+    try {
+      const run = resolveRun(store, args.runId);
 
-      case 'chain': {
-        const links = new SessionChainLedger(store).list(run.runId);
-        if (args.json) {
-          io.out(JSON.stringify(links, null, 2));
-        } else {
-          io.out(renderChain(links).trimEnd());
-        }
-        return 0;
-      }
-
-      case 'watch': {
-        const iterations = args.iterations ?? Number.POSITIVE_INFINITY;
-        for (let i = 0; i < iterations; i++) {
-          if (i > 0 && args.intervalMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, args.intervalMs));
-          }
+      switch (args.command) {
+        case 'status': {
           const view = buildRunStatus(store, run.runId);
           io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
-          if (TERMINAL_RUN_STATES.includes(view.state)) {
-            break;
-          }
+          return 0;
         }
-        return 0;
-      }
 
-      default: {
-        const action = args.command as 'pause' | 'stop' | 'resume' | 'disable';
-        const rule = INTENT_GUARD[action];
-        if (!rule.allows(run)) {
-          io.err(`${rule.rejection} ${run.state}`);
-          return 3;
+        case 'chain': {
+          const links = new SessionChainLedger(store).list(run.runId);
+          if (args.json) {
+            io.out(JSON.stringify(links, null, 2));
+          } else {
+            io.out(renderChain(links).trimEnd());
+          }
+          return 0;
         }
-        // 先落库，再打印确认——确认输出即代表意图已持久化
-        const intent = new ControlIntentLog(store).append(run.runId, rule.kind);
-        io.out(`${action} requested for run ${run.runId} (watermark ${intent.watermark}, intent ${intent.intentId})`);
-        return 0;
+
+        case 'watch': {
+          const iterations = args.iterations ?? Number.POSITIVE_INFINITY;
+          for (let i = 0; i < iterations; i++) {
+            if (i > 0 && args.intervalMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, args.intervalMs));
+            }
+            const view = buildRunStatus(store, run.runId);
+            io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
+            if (TERMINAL_RUN_STATES.includes(view.state)) {
+              break;
+            }
+          }
+          return 0;
+        }
+
+        default: {
+          const action = args.command as 'pause' | 'stop' | 'resume' | 'disable';
+          const rule = INTENT_GUARD[action];
+          if (!rule.allows(run)) {
+            io.err(`${rule.rejection} ${run.state}`);
+            return 3;
+          }
+          // 先落库，再打印确认——确认输出即代表意图已持久化
+          const intent = new ControlIntentLog(store).append(run.runId, rule.kind);
+          io.out(`${action} requested for run ${run.runId} (watermark ${intent.watermark}, intent ${intent.intentId})`);
+          return 0;
+        }
       }
+    } finally {
+      db.close();
     }
   } catch (err) {
     if (err instanceof NotFoundError) {
@@ -6470,8 +6550,6 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     io.err(`error: ${(err as Error).message}`);
     return 1;
-  } finally {
-    db.close();
   }
 }
 ```
