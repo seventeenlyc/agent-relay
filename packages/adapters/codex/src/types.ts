@@ -7,7 +7,7 @@ export interface JsonRpcRequest<T = unknown> {
 
 export interface JsonRpcResponse<T = unknown> {
   jsonrpc: '2.0';
-  id: number | string;
+  id: number | string | null;
   result?: T;
   error?: {
     code: number;
@@ -104,6 +104,7 @@ export interface ItemDeltaParams {
   threadId: string;
   turnId: string;
   delta: string;
+  itemId?: string;
 }
 
 export interface TurnCompletedParams {
@@ -115,3 +116,10 @@ export interface TurnCompletedParams {
     error?: unknown;
   };
 }
+
+export type ServerNotification =
+  | JsonRpcNotification<ThreadStatusChangedParams>
+  | JsonRpcNotification<ItemDeltaParams>
+  | JsonRpcNotification<TurnCompletedParams>
+  | JsonRpcNotification<unknown>;
+

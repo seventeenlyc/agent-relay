@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import type { ServerNotification, JsonRpcResponse, ItemDeltaParams } from '../../packages/adapters/codex/src/types.ts';
 
 const MOCK_SERVER_PATH = fileURLToPath(new URL('../fixtures/mock-codex-app-server.mjs', import.meta.url));
 
@@ -12,8 +13,8 @@ test('codex-fixture: mock app-server starts and handles initialize, thread/start
   });
 
   const rl = readline.createInterface({ input: proc.stdout! });
-  const responses: any[] = [];
-  const notifications: any[] = [];
+  const responses: JsonRpcResponse<any>[] = [];
+  const notifications: ServerNotification[] = [];
 
   rl.on('line', (line) => {
     try {
@@ -106,3 +107,21 @@ test('codex-fixture: mock app-server starts and handles initialize, thread/start
     proc.kill();
   }
 });
+
+test('codex-types: accepts null id for parse errors and optional itemId on delta', () => {
+  const errorResp: JsonRpcResponse = {
+    jsonrpc: '2.0',
+    id: null,
+    error: { code: -32700, message: 'Parse error' }
+  };
+  assert.strictEqual(errorResp.id, null);
+
+  const deltaParams: ItemDeltaParams = {
+    threadId: 'th-1',
+    turnId: 'tu-1',
+    delta: 'hi',
+    itemId: 'item-1'
+  };
+  assert.strictEqual(deltaParams.itemId, 'item-1');
+});
+
