@@ -48,11 +48,13 @@ function driveCanonicalHandshake(build: CoordinatorBuilder) {
   const leaseManager = new WorkspaceLeaseManager();
   leaseManager.acquireInitialLease(WORKSPACE_KEY, manifest.sourceSessionId, 1);
 
+  // 先构造被测 coordinator，再由它启动新会话：startNewSession 是契约成员，必须被契约测试真正调用。
+  const coordinator = build(stateMachine, leaseManager, WORKSPACE_KEY);
+
   stateMachine.requestHandoff('unit_completed');
   stateMachine.checkpointCompleted(manifest.handoffId);
-  stateMachine.startNewSession('target-session');
-
-  const coordinator = build(stateMachine, leaseManager, WORKSPACE_KEY);
+  coordinator.startNewSession('target-session');
+  assert.strictEqual(stateMachine.getState(), 'PREPARING');
 
   const prompt = coordinator.buildPreparationPrompt(manifest);
   assert.ok(prompt.length > 0, 'buildPreparationPrompt must return a non-empty prompt');
