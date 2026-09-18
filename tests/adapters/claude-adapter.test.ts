@@ -66,19 +66,32 @@ test('claude-adapter: handles nonexistent session edge cases gracefully', async 
 test('claude-adapter: generates uuid if sessionId not provided and wires hookHandler', async () => {
   const hookHandler = new ClaudeHookHandler();
   let hookTriggered = false;
-  hookHandler.onHandoffTrigger(() => {
+  let receivedReason = '';
+  hookHandler.onHandoffTrigger((_sid, reason) => {
     hookTriggered = true;
+    receivedReason = reason;
+  });
+
+  const stopHookPayload = JSON.stringify({
+    type: 'system',
+    subtype: 'hook_response',
+    session_id: 'sess-auto-uuid',
+    hook_id: 'stop-hook-1',
+    hook_name: 'Stop:supervisor',
+    hook_event: 'Stop',
+    outcome: 'success'
   });
 
   const runner = new ClaudeProcessRunner({
     binPath: process.execPath,
-    extraArgsPrefix: [MOCK_CLI_PATH]
+    extraArgsPrefix: [MOCK_CLI_PATH, '--raw-line', stopHookPayload]
   });
   const adapter = new ClaudeAdapter({ runner, hookHandler });
 
   assert.strictEqual(adapter.getHookHandler(), hookHandler);
 
   const fresh = await adapter.createFresh({
+    sessionId: 'sess-auto-uuid',
     runId: 'run-auto-uuid',
     bare: true,
     initialPrompt: 'PROBE_OK'
@@ -86,6 +99,74 @@ test('claude-adapter: generates uuid if sessionId not provided and wires hookHan
 
   assert.ok(fresh.sessionId);
   assert.strictEqual(fresh.active, true);
+
+  // Wait for raw line hook event delivery
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.strictEqual(hookTriggered, true);
+  assert.strictEqual(receivedReason, 'hook_stop');
+});
+
+test('claude-adapter: generates uuid when sessionId is omitted', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH]
+  });
+  const adapter = new ClaudeAdapter({ runner });
+  const fresh = await adapter.createFresh({
+    runId: 'run-uuid-check',
+    bare: true,
+    initialPrompt: 'PROBE_OK'
+  });
+  assert.ok(fresh.sessionId);
+  assert.notStrictEqual(fresh.sessionId, '');
+});
+
+test('claude-adapter: throws when submit fails delivery on closed or non-writable stdin', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH, '--sleep', '2000']
+  });
+  const adapter = new ClaudeAdapter({ runner });
+
+  await adapter.createFresh({
+    sessionId: 'sess-stdin-closed',
+    runId: 'run-stdin-closed',
+    bare: true
+  });
+
+  // Mock sendInput to simulate non-writable stdin failure while session is active
+  runner.sendInput = () => false;
+
+  assert.throws(
+    () => adapter.submit('sess-stdin-closed', 'msg-fail', 'some-content'),
+    /Failed to deliver input to session sess-stdin-closed: stdin is not writable/
+  );
+
+  adapter.interruptOwned('sess-stdin-closed');
+});
+
+test('claude-adapter: preserves null exitCode on signal termination in inspectSession', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH, '--sleep', '3000']
+  });
+  const adapter = new ClaudeAdapter({ runner });
+
+  await adapter.createFresh({
+    sessionId: 'sess-sigterm-null',
+    runId: 'run-sigterm',
+    bare: true
+  });
+
+  // Interrupt sends SIGTERM/SIGKILL so exit code should be null
+  adapter.interruptOwned('sess-sigterm-null');
+
+  // Wait for process close event to record null exit code
+  await new Promise((r) => setTimeout(r, 100));
+
+  const inspected = adapter.inspectSession('sess-sigterm-null');
+  assert.strictEqual(inspected?.active, false);
+  assert.strictEqual(inspected?.exitCode, null);
 });
 
 test('claude-adapter: packages/adapters/claude/src/index.ts exports all components', async () => {

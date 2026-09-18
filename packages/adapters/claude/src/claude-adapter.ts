@@ -60,7 +60,6 @@ export class ClaudeAdapter implements AgentRelayAdapter {
       runId: config.runId,
       active: true,
       draining: false,
-      effectiveModel: config.model,
       cwd: config.cwd || process.cwd(),
       executionAuthorized: !config.readOnly,
       lastEvents: []
@@ -83,6 +82,9 @@ export class ClaudeAdapter implements AgentRelayAdapter {
         keepStdinOpen: true,
         onEvent: (ev) => {
           state.lastEvents.push(ev);
+          if (state.lastEvents.length > 100) {
+            state.lastEvents.shift();
+          }
           if (ev.type === 'system' && (ev as Record<string, unknown>).subtype === 'init') {
             const initEv = ev as SystemInitEvent;
             state.effectiveModel = {
@@ -105,8 +107,15 @@ export class ClaudeAdapter implements AgentRelayAdapter {
 
     // Wait briefly for system:init or return initial state
     const start = Date.now();
-    while (Date.now() - start < 20) {
+    while (Date.now() - start < 50) {
+      if (state.effectiveModel || !state.active) {
+        break;
+      }
       await new Promise((r) => setTimeout(r, 5));
+    }
+
+    if (!state.effectiveModel && config.model) {
+      state.effectiveModel = config.model;
     }
 
     return {
@@ -114,7 +123,7 @@ export class ClaudeAdapter implements AgentRelayAdapter {
       active: state.active,
       effectiveModel: state.effectiveModel || config.model,
       cwd: state.cwd,
-      exitCode: state.exitCode ?? null
+      exitCode: state.exitCode !== undefined ? state.exitCode : (state.active ? null : 0)
     };
   }
 
@@ -126,7 +135,7 @@ export class ClaudeAdapter implements AgentRelayAdapter {
       active: s.active,
       effectiveModel: s.effectiveModel,
       cwd: s.cwd,
-      exitCode: s.exitCode ?? (s.active ? null : 0)
+      exitCode: s.exitCode !== undefined ? s.exitCode : (s.active ? null : 0)
     };
   }
 
@@ -135,7 +144,10 @@ export class ClaudeAdapter implements AgentRelayAdapter {
     if (!s || !s.active) {
       throw new Error(`Cannot submit to inactive session ${sessionId}`);
     }
-    this.runner.sendInput(sessionId, content);
+    const delivered = this.runner.sendInput(sessionId, content);
+    if (!delivered) {
+      throw new Error(`Failed to deliver input to session ${sessionId}: stdin is not writable`);
+    }
   }
 
   public requestDrain(sessionId: string, _handoffId: string): boolean {
