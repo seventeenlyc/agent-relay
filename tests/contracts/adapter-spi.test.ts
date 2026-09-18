@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import type { AgentRelayAdapter, SessionCapabilities, SpawnSessionConfig } from '../../packages/protocol/src/adapter.ts';
 import { MockAdapter } from '../../packages/adapters/mock/src/mock-adapter.ts';
+import { ClaudeAdapter } from '../../packages/adapters/claude/src/claude-adapter.ts';
+import { ClaudeProcessRunner } from '../../packages/adapters/claude/src/runner.ts';
 
 test('adapter-spi: MockAdapter implements AgentRelayAdapter interface', async () => {
   const adapter: AgentRelayAdapter = new MockAdapter();
@@ -41,3 +44,47 @@ test('adapter-spi: MockAdapter implements AgentRelayAdapter interface', async ()
   const afterInterrupt = await adapter.inspectSession('sess-test-1');
   assert.strictEqual(afterInterrupt?.active, false);
 });
+
+test('adapter-spi: ClaudeAdapter implements AgentRelayAdapter interface', async () => {
+  const mockCliPath = fileURLToPath(new URL('../fixtures/mock-claude-cli.mjs', import.meta.url));
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [mockCliPath]
+  });
+  const adapter: AgentRelayAdapter = new ClaudeAdapter({ runner });
+
+  const caps = adapter.capabilities();
+  assert.strictEqual(caps.level, 'L3');
+  assert.strictEqual(caps.streamJsonSupported, true);
+  assert.strictEqual(caps.modelEffortPreservation, true);
+
+  const config: SpawnSessionConfig = {
+    sessionId: 'sess-spi-claude',
+    runId: 'run-spi-1',
+    model: { provider: 'anthropic', model: 'claude-3-7-sonnet', effort: 'high' },
+    initialPrompt: 'PROBE_OK'
+  };
+
+  const inspect = await adapter.createFresh(config);
+  assert.strictEqual(inspect.sessionId, 'sess-spi-claude');
+  assert.strictEqual(inspect.active, true);
+  assert.strictEqual(inspect.effectiveModel?.model, 'claude-3-7-sonnet');
+  assert.strictEqual(inspect.effectiveModel?.effort, 'high');
+
+  const inspected = await adapter.inspectSession('sess-spi-claude');
+  assert.strictEqual(inspected?.sessionId, 'sess-spi-claude');
+
+  const drainSuccess = await adapter.requestDrain('sess-spi-claude', 'handoff-spi');
+  assert.strictEqual(drainSuccess, true);
+
+  const quiescence = await adapter.awaitQuiescence('sess-spi-claude', 1000);
+  assert.strictEqual(quiescence, 'quiescent');
+
+  const authSuccess = await adapter.authorizeExecution('sess-spi-claude', 2, 'TOKEN_SPI');
+  assert.strictEqual(authSuccess, true);
+
+  const inspectDone = await adapter.inspectSession('sess-spi-claude');
+  assert.strictEqual(inspectDone?.active, false);
+  assert.strictEqual(inspectDone?.exitCode, 0);
+});
+

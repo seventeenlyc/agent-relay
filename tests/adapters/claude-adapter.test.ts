@@ -45,8 +45,24 @@ test('claude-adapter: implements AgentRelayAdapter with L3 capability and lifecy
   const quiescence = await adapter.awaitQuiescence('sess-claude-100', 500);
   assert.strictEqual(quiescence, 'quiescent');
 
-  const interruptRes = await adapter.interruptOwned('sess-claude-100');
-  assert.strictEqual(interruptRes, true);
+  // Once quiescent (process exited), inspect confirms inactive and clean exit code
+  const inspectedAfter = adapter.inspectSession('sess-claude-100');
+  assert.strictEqual(inspectedAfter?.active, false);
+  assert.strictEqual(inspectedAfter?.exitCode, 0);
+
+  // interruptOwned on already-terminated session returns false
+  const interruptRes = adapter.interruptOwned('sess-claude-100');
+  assert.strictEqual(interruptRes, false);
+
+  // Verify getSessionEvents and getSessionOutput public getters
+  const events = adapter.getSessionEvents('sess-claude-100');
+  assert.ok(events.length > 0);
+  // Defensive copy test: mutation of returned array does not affect internal state
+  events.pop();
+  assert.notStrictEqual(events.length, adapter.getSessionEvents('sess-claude-100').length);
+
+  const output = adapter.getSessionOutput('sess-claude-100');
+  assert.ok(output.includes('PROBE_OK'));
 });
 
 test('claude-adapter: handles nonexistent session edge cases gracefully', async () => {
@@ -205,4 +221,29 @@ test('claude-adapter: supports submit to active session and awaitQuiescence time
   const interrupted = adapter.interruptOwned('sess-active-submit');
   assert.strictEqual(interrupted, true);
 });
+
+test('claude-adapter: preserves custom model provider on system:init and handles empty getters', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH]
+  });
+  const adapter = new ClaudeAdapter({ runner });
+
+  // Missing session returns empty array and empty string
+  assert.deepStrictEqual(adapter.getSessionEvents('sess-nonexistent'), []);
+  assert.strictEqual(adapter.getSessionOutput('sess-nonexistent'), '');
+
+  const fresh = await adapter.createFresh({
+    sessionId: 'sess-custom-provider',
+    runId: 'run-custom-p',
+    model: { provider: 'vertex-ai', model: 'claude-3-7-sonnet', effort: 'high' },
+    bare: true,
+    initialPrompt: 'PROBE_OK'
+  });
+
+  assert.strictEqual(fresh.effectiveModel?.provider, 'vertex-ai');
+  const inspected = adapter.inspectSession('sess-custom-provider');
+  assert.strictEqual(inspected?.effectiveModel?.provider, 'vertex-ai');
+});
+
 

@@ -7,7 +7,7 @@ import type {
 } from '../../../protocol/src/adapter.ts';
 import { ClaudeProcessRunner } from './runner.ts';
 import { ClaudeHookHandler } from './hooks.ts';
-import type { ClaudeStreamEvent, SystemInitEvent } from './types.ts';
+import type { ClaudeStreamEvent, SystemInitEvent, AssistantEvent, ResultEvent } from './types.ts';
 
 export interface ClaudeAdapterOptions {
   runner?: ClaudeProcessRunner;
@@ -88,7 +88,7 @@ export class ClaudeAdapter implements AgentRelayAdapter {
           if (ev.type === 'system' && (ev as Record<string, unknown>).subtype === 'init') {
             const initEv = ev as SystemInitEvent;
             state.effectiveModel = {
-              provider: 'anthropic',
+              provider: config.model?.provider || 'anthropic',
               model: initEv.model,
               effort: config.model?.effort
             };
@@ -118,24 +118,41 @@ export class ClaudeAdapter implements AgentRelayAdapter {
       state.effectiveModel = config.model;
     }
 
+    let exitCode: number | null;
+    if (state.exitCode !== undefined) {
+      exitCode = state.exitCode;
+    } else if (state.active) {
+      exitCode = null;
+    } else {
+      exitCode = state.exitCode ?? null;
+    }
+
     return {
       sessionId: sid,
       active: state.active,
       effectiveModel: state.effectiveModel || config.model,
       cwd: state.cwd,
-      exitCode: state.exitCode !== undefined ? state.exitCode : (state.active ? null : 0)
+      exitCode
     };
   }
 
   public inspectSession(sessionId: string): SessionInspectResult | undefined {
     const s = this.sessions.get(sessionId);
     if (!s) return undefined;
+    let exitCode: number | null;
+    if (s.exitCode !== undefined) {
+      exitCode = s.exitCode;
+    } else if (s.active) {
+      exitCode = null;
+    } else {
+      exitCode = s.exitCode ?? null;
+    }
     return {
       sessionId: s.sessionId,
       active: s.active,
       effectiveModel: s.effectiveModel,
       cwd: s.cwd,
-      exitCode: s.exitCode !== undefined ? s.exitCode : (s.active ? null : 0)
+      exitCode
     };
   }
 
@@ -162,12 +179,42 @@ export class ClaudeAdapter implements AgentRelayAdapter {
     if (!s) return 'error';
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      if (!s.active || s.draining) {
+      if (!s.active) {
         return 'quiescent';
       }
       await new Promise((r) => setTimeout(r, 25));
     }
     return 'timeout';
+  }
+
+  public getSessionEvents(sessionId: string): ClaudeStreamEvent[] {
+    const s = this.sessions.get(sessionId);
+    if (!s) return [];
+    return [...s.lastEvents];
+  }
+
+  public getSessionOutput(sessionId: string): string {
+    const s = this.sessions.get(sessionId);
+    if (!s) return '';
+    const parts: string[] = [];
+    for (const ev of s.lastEvents) {
+      if (ev.type === 'assistant') {
+        const aEv = ev as AssistantEvent;
+        if (aEv.message && Array.isArray(aEv.message.content)) {
+          for (const item of aEv.message.content) {
+            if (typeof item.text === 'string') {
+              parts.push(item.text);
+            }
+          }
+        }
+      } else if (ev.type === 'result') {
+        const rEv = ev as ResultEvent;
+        if (typeof rEv.result === 'string') {
+          parts.push(rEv.result);
+        }
+      }
+    }
+    return parts.join('');
   }
 
   public authorizeExecution(sessionId: string, epoch: number, executionToken: string): boolean {

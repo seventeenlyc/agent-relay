@@ -39,7 +39,12 @@ export class TwoPhaseHandshakeCoordinator {
   }
 
   public verifyAckAndAuthorize(manifest: HandoffPackManifest, ack: HandoffAckPacket): HandshakeResult {
-    // 1. Verify hash matching
+    // 1. Verify handoff ID match
+    if (ack.handoffId !== manifest.handoffId) {
+      return { success: false, error: 'Handoff ID mismatch' };
+    }
+
+    // 2. Verify hash matching
     if (ack.verifiedInputHeadHash !== manifest.inputLedgerHeadHash) {
       return { success: false, error: 'Input ledger head hash mismatch' };
     }
@@ -50,28 +55,48 @@ export class TwoPhaseHandshakeCoordinator {
       return { success: false, error: 'Workspace hash mismatch' };
     }
 
+    // 3. Verify target model match
+    if (ack.effectiveModel?.model !== manifest.targetModel.model) {
+      return {
+        success: false,
+        error: `Model mismatch: expected ${manifest.targetModel.model}, got ${ack.effectiveModel?.model}`
+      };
+    }
+
+    // 4. Check lease preconditions BEFORE modifying state machine
+    const currentLease = this.leaseManager.getLease(this.workspaceKey);
+    if (!currentLease) {
+      return { success: false, error: `No active lease for workspace ${this.workspaceKey}` };
+    }
+    if (currentLease.currentOwner !== manifest.sourceSessionId) {
+      return {
+        success: false,
+        error: `Lease owner mismatch: expected ${manifest.sourceSessionId}, got ${currentLease.currentOwner}`
+      };
+    }
+    if (currentLease.epoch !== manifest.epoch) {
+      return {
+        success: false,
+        error: `Lease epoch mismatch: expected ${manifest.epoch}, got ${currentLease.epoch}`
+      };
+    }
+
+    // 5. Perform CAS lease transfer
+    const newEpoch = manifest.epoch + 1;
+    const casSuccess = this.leaseManager.compareAndSetOwner(
+      this.workspaceKey,
+      manifest.sourceSessionId,
+      ack.newSessionId,
+      manifest.epoch,
+      newEpoch
+    );
+    if (!casSuccess) {
+      return { success: false, error: 'CAS lease acquisition failed' };
+    }
+
+    // 6. Only AFTER successful CAS transfer, advance the state machine
     try {
-      // 2. Advance state machine to READY
       this.stateMachine.receiveAck(ack);
-
-      // 3. Atomically transfer CAS lease to new session
-      const currentLease = this.leaseManager.getLease(this.workspaceKey);
-      if (!currentLease) {
-        return { success: false, error: `No active lease for workspace ${this.workspaceKey}` };
-      }
-      const newEpoch = currentLease.epoch + 1;
-      const casSuccess = this.leaseManager.compareAndSetOwner(
-        this.workspaceKey,
-        currentLease.currentOwner,
-        ack.newSessionId,
-        currentLease.epoch,
-        newEpoch
-      );
-      if (!casSuccess) {
-        return { success: false, error: 'CAS lease acquisition failed' };
-      }
-
-      // 4. Issue execution token and advance state machine to RUNNING
       const token = this.stateMachine.issueExecutionToken();
       return {
         success: true,
@@ -79,17 +104,82 @@ export class TwoPhaseHandshakeCoordinator {
         epoch: token.epoch
       };
     } catch (err: unknown) {
+      // Revert CAS lease on state machine failure
+      this.leaseManager.compareAndSetOwner(
+        this.workspaceKey,
+        ack.newSessionId,
+        manifest.sourceSessionId,
+        newEpoch,
+        manifest.epoch
+      );
       return { success: false, error: (err as Error).message };
     }
   }
 
   public extractAckFromText(text: string): HandoffAckPacket | undefined {
-    const jsonMatch = text.match(/\{[\s\S]*"handoffId"[\s\S]*"verifiedInputHeadHash"[\s\S]*\}/);
-    if (!jsonMatch) return undefined;
-    try {
-      return JSON.parse(jsonMatch[0]) as HandoffAckPacket;
-    } catch {
-      return undefined;
+    // 1. Check markdown code blocks first
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/g;
+    let match: RegExpExecArray | null;
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      const block = match[1].trim();
+      if (block.includes('"handoffId"') && block.includes('"verifiedInputHeadHash"')) {
+        try {
+          const parsed = JSON.parse(block) as HandoffAckPacket;
+          if (parsed && typeof parsed === 'object' && parsed.handoffId && parsed.verifiedInputHeadHash) {
+            return parsed;
+          }
+        } catch {
+          // Not valid JSON, continue scanning
+        }
+      }
     }
+
+    // 2. Scan for discrete balanced JSON objects
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    let startIndex = -1;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (char === '\\') {
+          escape = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+      } else {
+        if (char === '"') {
+          inString = true;
+        } else if (char === '{') {
+          if (depth === 0) {
+            startIndex = i;
+          }
+          depth++;
+        } else if (char === '}') {
+          if (depth > 0) {
+            depth--;
+            if (depth === 0 && startIndex !== -1) {
+              const candidate = text.slice(startIndex, i + 1);
+              startIndex = -1;
+              if (candidate.includes('"handoffId"') && candidate.includes('"verifiedInputHeadHash"')) {
+                try {
+                  const parsed = JSON.parse(candidate) as HandoffAckPacket;
+                  if (parsed && typeof parsed === 'object' && parsed.handoffId && parsed.verifiedInputHeadHash) {
+                    return parsed;
+                  }
+                } catch {
+                  // Not valid JSON, continue scanning
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return undefined;
   }
 }

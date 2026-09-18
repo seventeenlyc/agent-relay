@@ -140,6 +140,40 @@ test('handshake: rejects ACK with mismatched manifest hashes', () => {
   assert.strictEqual(res3.success, false);
   assert.match(res3.error || '', /Workspace hash mismatch/);
   assert.strictEqual(sm.getState(), 'PREPARING');
+
+  // Mismatched handoffId
+  const badHandoffIdAck: HandoffAckPacket = {
+    handoffId: 'WRONG_HANDOFF_ID',
+    runId: 'run-1',
+    newSessionId: 'session-B',
+    effectiveModel: { provider: 'anthropic', model: 'claude-3-7-sonnet' },
+    verifiedInputHeadHash: 'input-hash-1',
+    verifiedTaskSnapshotHash: 'task-hash-1',
+    verifiedWorkspaceHash: 'valid-ws-hash',
+    ackTimestamp: Date.now()
+  };
+
+  const res4 = coordinator.verifyAckAndAuthorize(manifest, badHandoffIdAck);
+  assert.strictEqual(res4.success, false);
+  assert.match(res4.error || '', /Handoff ID mismatch/);
+  assert.strictEqual(sm.getState(), 'PREPARING');
+
+  // Mismatched model
+  const badModelAck: HandoffAckPacket = {
+    handoffId: 'h-1',
+    runId: 'run-1',
+    newSessionId: 'session-B',
+    effectiveModel: { provider: 'anthropic', model: 'claude-3-5-haiku' },
+    verifiedInputHeadHash: 'input-hash-1',
+    verifiedTaskSnapshotHash: 'task-hash-1',
+    verifiedWorkspaceHash: 'valid-ws-hash',
+    ackTimestamp: Date.now()
+  };
+
+  const res5 = coordinator.verifyAckAndAuthorize(manifest, badModelAck);
+  assert.strictEqual(res5.success, false);
+  assert.match(res5.error || '', /Model mismatch: expected claude-3-7-sonnet, got claude-3-5-haiku/);
+  assert.strictEqual(sm.getState(), 'PREPARING');
 });
 
 test('handshake: rejects authorization if lease is missing or CAS fails', () => {
@@ -180,23 +214,51 @@ test('handshake: rejects authorization if lease is missing or CAS fails', () => 
   assert.strictEqual(res1.success, false);
   assert.match(res1.error || '', /No active lease for workspace ws-missing/);
 
-  // Case 2: CAS failure (e.g. lease owner changed concurrently)
+  // Case 2: Lease owner mismatch
   const lease2 = new WorkspaceLeaseManager();
-  lease2.acquireInitialLease('ws-cas', 'session-A', 1);
+  lease2.acquireInitialLease('ws-owner-mismatch', 'session-OTHER', 1);
   const sm2 = new HandoffStateMachine('run-1', 'session-A', 1);
   sm2.requestHandoff('unit_completed');
   sm2.checkpointCompleted();
 
-  const coordinator2 = new TwoPhaseHandshakeCoordinator(sm2, lease2, 'ws-cas');
+  const coordinator2 = new TwoPhaseHandshakeCoordinator(sm2, lease2, 'ws-owner-mismatch');
   coordinator2.startNewSession('session-B');
-
-  // Interfere with lease so compareAndSetOwner will fail (e.g., owner altered)
-  // Mock compareAndSetOwner returning false
-  lease2.compareAndSetOwner = () => false;
 
   const res2 = coordinator2.verifyAckAndAuthorize(manifest, ack);
   assert.strictEqual(res2.success, false);
-  assert.match(res2.error || '', /CAS lease acquisition failed/);
+  assert.match(res2.error || '', /Lease owner mismatch: expected session-A, got session-OTHER/);
+
+  // Case 3: Lease epoch mismatch
+  const lease3 = new WorkspaceLeaseManager();
+  lease3.acquireInitialLease('ws-epoch-mismatch', 'session-A', 99);
+  const sm3 = new HandoffStateMachine('run-1', 'session-A', 1);
+  sm3.requestHandoff('unit_completed');
+  sm3.checkpointCompleted();
+
+  const coordinator3 = new TwoPhaseHandshakeCoordinator(sm3, lease3, 'ws-epoch-mismatch');
+  coordinator3.startNewSession('session-B');
+
+  const res3 = coordinator3.verifyAckAndAuthorize(manifest, ack);
+  assert.strictEqual(res3.success, false);
+  assert.match(res3.error || '', /Lease epoch mismatch: expected 1, got 99/);
+
+  // Case 4: CAS failure (e.g. lease owner changed concurrently)
+  const lease4 = new WorkspaceLeaseManager();
+  lease4.acquireInitialLease('ws-cas', 'session-A', 1);
+  const sm4 = new HandoffStateMachine('run-1', 'session-A', 1);
+  sm4.requestHandoff('unit_completed');
+  sm4.checkpointCompleted();
+
+  const coordinator4 = new TwoPhaseHandshakeCoordinator(sm4, lease4, 'ws-cas');
+  coordinator4.startNewSession('session-B');
+
+  // Interfere with lease so compareAndSetOwner will fail (e.g., owner altered)
+  // Mock compareAndSetOwner returning false
+  lease4.compareAndSetOwner = () => false;
+
+  const res4 = coordinator4.verifyAckAndAuthorize(manifest, ack);
+  assert.strictEqual(res4.success, false);
+  assert.match(res4.error || '', /CAS lease acquisition failed/);
 });
 
 test('handshake: catches state machine error during verifyAckAndAuthorize', () => {
@@ -263,6 +325,41 @@ Standing by for execution authorization.
 
   const extracted = coordinator.extractAckFromText(outputWithJson);
   assert.deepStrictEqual(extracted, expectedAck);
+
+  // Discrete balanced JSON object without markdown block
+  const discreteText = `Verification complete. ACK: ${JSON.stringify(expectedAck)} Ready for token.`;
+  const extractedDiscrete = coordinator.extractAckFromText(discreteText);
+  assert.deepStrictEqual(extractedDiscrete, expectedAck);
+
+  // Preceding prompt echo containing manifest JSON block followed by ACK code block
+  const promptEchoWithAck = `
+Inspect manifest:
+\`\`\`json
+{
+  "handoffId": "h-extract-1",
+  "runId": "run-1",
+  "epoch": 1,
+  "sourceSessionId": "session-A",
+  "targetModel": { "provider": "anthropic", "model": "claude-3-7-sonnet" },
+  "inputLedgerHeadHash": "input-hash-xyz"
+}
+\`\`\`
+Here is the ACK response:
+\`\`\`json
+${JSON.stringify(expectedAck, null, 2)}
+\`\`\`
+`;
+  const extractedEcho = coordinator.extractAckFromText(promptEchoWithAck);
+  assert.deepStrictEqual(extractedEcho, expectedAck);
+
+  // Preceding discrete JSON object without markdown followed by discrete ACK object
+  const multipleDiscrete = `
+{"status": "ok", "handoffId": "h-extract-1"}
+Some intervening notes.
+${JSON.stringify(expectedAck)}
+`;
+  const extractedMultiDiscrete = coordinator.extractAckFromText(multipleDiscrete);
+  assert.deepStrictEqual(extractedMultiDiscrete, expectedAck);
 
   // Non-matching text
   assert.strictEqual(coordinator.extractAckFromText('No JSON here'), undefined);

@@ -76,6 +76,7 @@ export class ClaudeProcessRunner {
     const rlStdout = readline.createInterface({ input: proc.stdout! });
     const rlStderr = readline.createInterface({ input: proc.stderr! });
 
+    const MAX_BUFFER_LINES = 500;
     const events: ClaudeStreamEvent[] = [];
     const rawLines: string[] = [];
     const stderrLines: string[] = [];
@@ -91,24 +92,43 @@ export class ClaudeProcessRunner {
 
     rlStdout.on('line', (line) => {
       rawLines.push(line);
+      if (rawLines.length > MAX_BUFFER_LINES) {
+        rawLines.shift();
+      }
       let ev: ClaudeStreamEvent | null = null;
       try {
         ev = JSON.parse(line) as ClaudeStreamEvent;
         events.push(ev);
+        if (events.length > MAX_BUFFER_LINES) {
+          events.shift();
+        }
       } catch {
         // Raw line fallback
       }
-      if (ev) {
-        options.onEvent?.(ev);
+      if (ev && options.onEvent) {
+        try {
+          options.onEvent(ev);
+        } catch {
+          // Isolate consumer callback errors
+        }
       }
     });
 
     rlStderr.on('line', (line) => {
       stderrLines.push(line);
-      options.onStderr?.(line);
+      if (stderrLines.length > MAX_BUFFER_LINES) {
+        stderrLines.shift();
+      }
+      if (options.onStderr) {
+        try {
+          options.onStderr(line);
+        } catch {
+          // Isolate consumer callback errors
+        }
+      }
     });
 
-    // Write initial user message if provided
+    // Write initial user message if provided, or close stdin if not keeping open
     if (options.initialPrompt !== undefined && proc.stdin && proc.stdin.writable) {
       const payload =
         JSON.stringify({
@@ -123,6 +143,12 @@ export class ClaudeProcessRunner {
         if (!options.keepStdinOpen) {
           proc.stdin.end();
         }
+      } catch {
+        // Ignore EPIPE
+      }
+    } else if (options.initialPrompt === undefined && !options.keepStdinOpen && proc.stdin && proc.stdin.writable) {
+      try {
+        proc.stdin.end();
       } catch {
         // Ignore EPIPE
       }

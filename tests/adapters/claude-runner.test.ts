@@ -210,4 +210,50 @@ test('claude-runner: supports multi-turn session with initialPrompt and subseque
   assert.strictEqual((assistantEvents[1] as any).message?.content?.[0]?.text, 'SECOND_OK');
 });
 
+test('claude-runner: isolates consumer callback errors without crashing stream processing', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [
+      MOCK_CLI_PATH,
+      '--stderr-line',
+      'SAMPLE_STDERR'
+    ]
+  });
+
+  const result = await runner.runSession({
+    sessionId: 'test-uuid-error-isolation',
+    runId: 'run-err-iso',
+    initialPrompt: 'PROBE_OK',
+    onEvent: () => {
+      throw new Error('Consumer onEvent crashed!');
+    },
+    onStderr: () => {
+      throw new Error('Consumer onStderr crashed!');
+    }
+  });
+
+  assert.strictEqual(result.code, 0);
+  assert.strictEqual(result.sessionId, 'test-uuid-error-isolation');
+  assert.ok(result.events.length > 0);
+  assert.ok(result.stderrLines.includes('SAMPLE_STDERR'));
+});
+
+test('claude-runner: closes stdin when initialPrompt is omitted and keepStdinOpen is false', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH]
+  });
+
+  const result = await runner.runSession({
+    sessionId: 'test-uuid-no-prompt-close-stdin',
+    runId: 'run-no-prompt',
+    keepStdinOpen: false
+  });
+
+  // Mock CLI readline loop exits on stdin EOF
+  assert.strictEqual(result.code, 0);
+  assert.strictEqual(result.sessionId, 'test-uuid-no-prompt-close-stdin');
+});
+
+
 
