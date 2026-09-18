@@ -3082,7 +3082,11 @@ test('prompt: buildRunBriefing carries goal, forbidden items and read-only hando
   const briefing = buildRunBriefing({ goal: 'Ship the pipeline', contract, runId: 'run-1' });
 
   assert.match(briefing, /Ship the pipeline/);
-  assert.match(briefing, /Do not change the public API/);
+  // 禁止项由 deriveContractFromLedger 提取，已剥离否定前缀（标题 FORBIDDEN_ITEMS 本身就是否定），
+  // 因此断言的是派生后的条目而不是人类原话——原话的逐字保真由账本负责，不由简报负责。
+  assert.deepStrictEqual(contract.forbiddenItems, ['change the public API']);
+  assert.ok(briefing.includes('FORBIDDEN_ITEMS:'));
+  assert.ok(briefing.includes('change the public API'));
   assert.match(briefing, /generated_handoff/);
   assert.ok(briefing.includes('run-1'));
 });
