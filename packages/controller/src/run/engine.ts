@@ -559,21 +559,32 @@ export class RunController {
       })
     );
     if (!inserted) {
-      this.store.updateRunState(this.runId, 'BLOCKED', { blockedReason: 'duplicate_handoff_id' });
+      const existing = this.store.getHandoff(handoffId);
+      // 只有被放弃的同一次交接可以重试；已请求/已授权/已完成的交接重复出现才是真正的重复回调（V13）。
+      if (!existing || existing.state !== 'ABANDONED') {
+        this.store.updateRunState(this.runId, 'BLOCKED', { blockedReason: 'duplicate_handoff_id' });
+        this.events.record({
+          runId: this.runId,
+          type: 'run_blocked',
+          payload: { reason: 'duplicate_handoff_id', handoffId }
+        });
+        this.persistStatusProjection();
+        return { kind: 'blocked', reason: 'duplicate_handoff_id' };
+      }
       this.events.record({
         runId: this.runId,
-        type: 'run_blocked',
-        payload: { reason: 'duplicate_handoff_id', handoffId }
+        type: 'handoff_retried',
+        sessionId: fromSessionId,
+        payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
       });
-      this.persistStatusProjection();
-      return { kind: 'blocked', reason: 'duplicate_handoff_id' };
+    } else {
+      this.events.record({
+        runId: this.runId,
+        type: 'handoff_requested',
+        sessionId: fromSessionId,
+        payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
+      });
     }
-    this.events.record({
-      runId: this.runId,
-      type: 'handoff_requested',
-      sessionId: fromSessionId,
-      payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
-    });
 
     // 步骤 2：旧 worker 收尾并确认静止
     this.stateMachine = new HandoffStateMachine(this.runId, fromSessionId, run.currentEpoch);
@@ -717,20 +728,30 @@ export class RunController {
     });
 
     if ('blockedBy' in transactionResult) {
+      const blocker = transactionResult.blockedBy;
+      // 暂停已经生效，触发阻塞的 pause_next_node 已被满足，必须消费掉——
+      // 否则它会在 PAUSED 守卫里长期压过 resume，把 run 永久卡住。
+      if (blocker.kind === 'pause_next_node') {
+        this.intents.consume(blocker.intentId);
+      }
+      // 这次交接没有完成：标记为放弃，使同一 handoff id 的重试不再被误判为重复回调（V13）。
+      this.store.transaction(() => {
+        this.store.updateHandoff(handoffId, { state: 'ABANDONED' });
+      });
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
-        pauseReason: `control_intent_${transactionResult.blockedBy.kind}`
+        pauseReason: `control_intent_${blocker.kind}`
       });
       this.events.record({
         runId: this.runId,
         type: 'handoff_blocked_by_control_intent',
         sessionId: toSessionId,
-        payload: { handoffId, intentId: transactionResult.blockedBy.intentId }
+        payload: { handoffId, intentId: blocker.intentId }
       });
       this.persistStatusProjection();
       return {
         kind: 'paused',
-        intentId: transactionResult.blockedBy.intentId,
+        intentId: blocker.intentId,
         reason: 'control_intent_arrived_during_handoff'
       };
     }
@@ -753,6 +774,9 @@ export class RunController {
     // 防御性复核：交接包含 await，意图可能在事务提交后、授权前到达
     const lateIntent = this.intents.resolve(this.runId);
     if (lateIntent) {
+      if (lateIntent.kind === 'pause_next_node') {
+        this.intents.consume(lateIntent.intentId);
+      }
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
         pauseReason: `control_intent_${lateIntent.kind}`

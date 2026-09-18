@@ -476,8 +476,9 @@ test('engine: rehydrate rebuilds ledger and task graph hashes verbatim (V22)', a
   const secondController = new RunController({
     store: secondStore,
     dataDir,
-    adapter: new ScriptedAdapter(),
+    adapter: first.adapter, // 同一适配器实例＝重启后会话仍存活（真实场景由适配器重新附着）
     adapterName: 'claude',
+    notifier: new RecordingNotifier(),
     createCoordinator: (deps) =>
       new TwoPhaseHandshakeCoordinator(
         deps.stateMachine as HandoffStateMachine,
@@ -489,12 +490,18 @@ test('engine: rehydrate rebuilds ledger and task graph hashes verbatim (V22)', a
   secondController.rehydrate('run-engine-1');
   assert.deepStrictEqual(secondController.getInvariantHashes(), hashes);
 
-  // The rebuilt run continues correctly instead of restarting from scratch
-  await secondController.tick();
+  // 重建后的 run 必须真的继续推进，而不是停在 current_session_lost
+  const resumed = await secondController.tick();
+  assert.strictEqual(resumed.kind, 'handoff_performed', 'the rebuilt run must continue, not recover');
+  const advanced = await secondController.tick();
+  assert.strictEqual(advanced.kind, 'unit_executed');
+  assert.strictEqual((advanced as { taskId: string }).taskId, 'u2');
+
   const tasks = JSON.parse(secondStore.getLatestTaskSnapshot('run-engine-1')!.snapshotJson) as Array<{
     status: string;
   }>;
   assert.strictEqual(tasks[0].status, 'completed', 'restored task state must be preserved');
+  assert.strictEqual(tasks[1].status, 'completed', 'the rebuilt run must have completed the next unit');
 
   secondDb.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
@@ -523,6 +530,95 @@ test('engine: a handoff whose old session cannot be confirmed quiescent enters r
   assert.strictEqual(adapter.created.length, 1);
 
   db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a pause arriving mid-handoff can still be resumed afterwards (V20)', async () => {
+  let intents: ControlIntentLog | null = null;
+  // 只注入一次：重试会以同一个 session id 再次 createFresh，
+  // 若每次都注入，「一次暂停 + 一次 resume」就变成「每次交接都暂停」，测不到重试路径。
+  let injected = false;
+  const adapter = new ScriptedAdapter({
+    onCreateFresh: (sessionId) => {
+      if (!injected && sessionId.endsWith('-s2')) {
+        injected = true;
+        intents!.append('run-engine-1', 'pause_next_node');
+      }
+    }
+  });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+  controller.startRun(config);
+  intents = new ControlIntentLog(store);
+
+  await controller.tick(); // unit 1 in s1
+  assert.strictEqual((await controller.tick()).kind, 'paused');
+
+  // 被阻塞的那次 pause 必须已被消费，否则它会一直压过 resume
+  const paused = store.getRun('run-engine-1');
+  assert.strictEqual(paused?.state, 'PAUSED');
+  assert.strictEqual(store.listPendingIntents('run-engine-1').length, 0);
+  assert.strictEqual(store.getHandoff('h-run-engine-1-1')?.state, 'ABANDONED');
+
+  intents.append('run-engine-1', 'resume');
+  const resumed = await controller.tick();
+  assert.strictEqual(resumed.kind, 'handoff_performed', 'resume must be able to leave PAUSED');
+
+  const outcomes = await controller.executeUntilSettled();
+  assert.strictEqual(outcomes[outcomes.length - 1].kind, 'completed');
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'COMPLETED');
+  // 放弃的那次交接被重试，而不是被当成重复回调而阻塞
+  assert.strictEqual(store.getHandoff('h-run-engine-1-1')?.state, 'COMPLETED');
+  assert.strictEqual(store.getRun('run-engine-1')?.handoffCount, 3);
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: the no-progress counter survives a controller restart (V23)', async () => {
+  const adapter = new ScriptedAdapter({
+    unitReplies: { u1: { status: 'failed', summary: 'build broken' } }
+  });
+  const { db, store, controller, config, dataDir, dbPath } = setup({ adapter });
+
+  controller.startRun(config);
+  await controller.tick(); // 失败 1
+  await controller.tick(); // 交接
+  await controller.tick(); // 失败 2（新会话里）
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'RUNNING');
+  assert.strictEqual(
+    store.listEvents('run-engine-1').filter((e) => e.type === 'unit_failed').length,
+    2
+  );
+  db.close();
+
+  // 重启：同一数据库、同一适配器实例（会话仍存活）
+  const restartedDb = new RelayDatabase({ dbPath });
+  const restartedStore = new RunStore(restartedDb);
+  const restarted = new RunController({
+    store: restartedStore,
+    dataDir,
+    adapter,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: (deps) =>
+      new TwoPhaseHandshakeCoordinator(
+        deps.stateMachine as HandoffStateMachine,
+        deps.leaseManager as unknown as WorkspaceLeaseManager,
+        deps.workspaceKey
+      )
+  });
+  restarted.rehydrate('run-engine-1');
+
+  const outcomes = await restarted.executeUntilSettled();
+  assert.strictEqual(outcomes[outcomes.length - 1].kind, 'blocked', 'the third identical failure must block');
+  assert.match(restartedStore.getRun('run-engine-1')?.blockedReason ?? '', /loop_detected_u1/);
+  assert.strictEqual(
+    restartedStore.listEvents('run-engine-1').filter((e) => e.type === 'unit_failed').length,
+    3,
+    'the counter must have been rebuilt from the event log, not restarted at zero'
+  );
+
+  restartedDb.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
