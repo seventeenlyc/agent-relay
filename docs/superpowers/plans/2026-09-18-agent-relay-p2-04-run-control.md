@@ -3900,6 +3900,8 @@ export interface ScriptedAdapterOptions {
   onCreateFresh?: (sessionId: string, config: SpawnSessionConfig) => void;
   /** 在 authorizeExecution 之后调用，用于在令牌送达后注入控制意图（V33 令牌消费之后） */
   onAuthorize?: (sessionId: string) => void;
+  /** 覆盖某个会话的静止态判定结果，用于驱动恢复路径。按引用惰性读取，测试可在 tick 之间修改 */
+  quiescenceOverrides?: Record<string, 'quiescent' | 'timeout' | 'error'>;
 }
 
 interface ScriptedSession {
@@ -4050,7 +4052,7 @@ export class ScriptedAdapter implements AgentRelayAdapter {
   public awaitQuiescence(sessionId: string, _timeoutMs?: number): Promise<'quiescent' | 'timeout' | 'error'> {
     const session = this.sessions.get(sessionId);
     if (!session) return Promise.resolve('error');
-    return Promise.resolve('quiescent');
+    return Promise.resolve(this.options.quiescenceOverrides?.[sessionId] ?? 'quiescent');
   }
 
   public authorizeExecution(sessionId: string, epoch: number, executionToken: string): boolean {
@@ -4512,6 +4514,61 @@ test('engine: a control intent delivered with the execution token invalidates it
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
+test('engine: a handoff whose old session cannot be confirmed quiescent enters recovery (V19)', async () => {
+  const overrides: Record<string, 'quiescent' | 'timeout' | 'error'> = {};
+  const adapter = new ScriptedAdapter({ quiescenceOverrides: overrides });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+
+  controller.startRun(config);
+  assert.strictEqual((await controller.tick()).kind, 'unit_executed');
+
+  // From now on the old worker never confirms it has stopped writing
+  overrides['run-engine-1-s1'] = 'timeout';
+
+  const outcome = await controller.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /old_session_quiescence_timeout/);
+
+  const run = store.getRun('run-engine-1');
+  assert.strictEqual(run?.state, 'RECOVERY_REQUIRED');
+  assert.strictEqual(run?.handoffCount, 0, 'a failed quiescence must not advance the handoff');
+  assert.strictEqual(store.getLeaseRow(run!.workspaceKey)?.epoch, 1, 'the lease must not advance');
+  assert.strictEqual(store.listChain('run-engine-1').length, 1, 'no successor session may be created');
+  assert.strictEqual(adapter.created.length, 1);
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a new session that never becomes quiescent enters recovery without gaining ownership (V19)', async () => {
+  const overrides: Record<string, 'quiescent' | 'timeout' | 'error'> = {};
+  const adapter = new ScriptedAdapter({
+    quiescenceOverrides: overrides,
+    onCreateFresh: (sessionId) => {
+      if (sessionId.endsWith('-s2')) {
+        overrides[sessionId] = 'error';
+      }
+    }
+  });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+
+  controller.startRun(config);
+  assert.strictEqual((await controller.tick()).kind, 'unit_executed');
+
+  const outcome = await controller.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /new_session_quiescence_error/);
+
+  const run = store.getRun('run-engine-1');
+  assert.strictEqual(run?.state, 'RECOVERY_REQUIRED');
+  assert.strictEqual(run?.currentSessionId?.endsWith('-s1'), true, 'ownership must not transfer');
+  assert.strictEqual(store.getLeaseRow(run!.workspaceKey)?.epoch, 1);
+  assert.strictEqual(adapter.wasAuthorized('run-engine-1-s2'), false, 'the new session must never be authorized');
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
 test('engine: an ACK reporting a different model fails the handoff without a second writer (V10)', async () => {
   const adapter = new ScriptedAdapter({
     modelOverrides: {
@@ -4623,7 +4680,7 @@ test('engine: rehydrate rebuilds ledger and task graph hashes verbatim (V22)', a
   assert.deepStrictEqual(secondController.getInvariantHashes(), hashes);
 
   // The rebuilt run continues correctly instead of restarting from scratch
-  secondController.tick();
+  await secondController.tick();
   const tasks = JSON.parse(secondStore.getLatestTaskSnapshot('run-engine-1')!.snapshotJson) as Array<{
     status: string;
   }>;
@@ -4791,6 +4848,7 @@ export class RunController {
         workspaceKey,
         workspacePath: path.resolve(config.workspacePath),
         goal: config.goal,
+        model: config.model,
         state: 'INITIALIZING',
         unitCount: config.tasks.length
       });
@@ -5051,6 +5109,25 @@ export class RunController {
       });
     });
 
+    // 首会话没有前驱，不经过两阶段握手，但执行权仍必须显式授予——
+    // 这样「任何写入者都经过一次授权」在首个会话上也成立，并且适配器侧可观测（§6.2）。
+    // 令牌格式与 state machine 的 issueExecutionToken 一致，epoch 即该会话刚获得的租约 epoch。
+    const initialToken = `EXEC_TOKEN_${randomUUID()}`;
+    const initialAuthorized = await this.adapter.authorizeExecution(sessionId, run.currentEpoch, initialToken);
+    if (!initialAuthorized) {
+      this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
+        blockedReason: 'first_session_authorize_failed'
+      });
+      this.events.record({
+        runId: this.runId,
+        type: 'recovery_required',
+        sessionId,
+        payload: { reason: 'first_session_authorize_failed' }
+      });
+      this.persistStatusProjection();
+      return { kind: 'recovery_required', reason: 'first_session_authorize_failed' };
+    }
+
     this.events.record({
       runId: this.runId,
       type: 'session_created',
@@ -5156,9 +5233,9 @@ export class RunController {
     });
     this.persistStatusProjection();
 
-    if (blocked) {
-      return { kind: 'blocked', reason: `loop_detected_${task.taskId}` };
-    }
+    // 一个 tick 只做一件事：这一 tick 执行了单元（结果可以是失败）。
+    // 无进展触发的 BLOCKED 是运行级终态，由下一个 tick 在终态分支里报告。
+    // 这样事件日志里的 unit_failed 次数与 outcome 流里的执行次数才一致。
     return { kind: 'unit_executed', taskId: task.taskId, status };
   }
 
