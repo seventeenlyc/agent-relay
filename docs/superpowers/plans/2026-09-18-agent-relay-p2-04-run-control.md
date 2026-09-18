@@ -6593,11 +6593,11 @@ git commit -m "feat(cli): add agent-relay status and control entrance over durab
 
 **Interfaces:**
 - Consumes: `RunController`、`ScriptedAdapter`、`DshAdapter`、`DshHandshakeCoordinator`、`runCli`、`RelayDatabase`、`RunStore`
-- Produces: S01/V13/V21/V22/V31/V33/V34 的端到端证据，以及一次真实 DSH 子进程的交接记录
+- Produces: S01/V13/V21/V22/V31/V34 的场景级端到端证据，以及一次真实 DSH 子进程的交接记录。V33（CAS 之后与令牌消费前后的控制意图）由 Task 8 的 `tests/run/engine.test.ts` 两个用例在真实引擎上覆盖，本任务不重复。
 
 - [ ] **Step 1: Extend the DSH mock server to answer unit prompts**
 
-Modify `tests/fixtures/mock-dsh-sdk-server.mjs` — insert this branch **before** the final `else` in the `session/prompt` handler (i.e. after the `text.startsWith('echo:')` branch):
+Modify `tests/fixtures/mock-dsh-sdk-server.mjs` — insert this branch **before** the `text.startsWith('echo:')` branch in the `session/prompt` handler (the branches are matched in source order, so a unit prompt must be recognised ahead of the generic echo arm):
 
 ```javascript
     } else if (/TASK_ID:\s*\S+/.test(text)) {
