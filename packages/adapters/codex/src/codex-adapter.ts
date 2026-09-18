@@ -79,7 +79,8 @@ export class CodexAdapter implements AgentRelayAdapter {
     const threadRes = await this.runner.sendRequest<ThreadStartResponse>('thread/start', {
       cwd,
       model: targetModel,
-      ephemeral: Boolean(config.noPersistence)
+      ephemeral: Boolean(config.noPersistence),
+      sessionId: config.sessionId
     });
 
     const threadId = threadRes.thread.id;

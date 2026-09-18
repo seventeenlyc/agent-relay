@@ -37,13 +37,13 @@ rl.on('line', (line) => {
         platformOs: 'windows'
       });
     } else if (method === 'thread/start') {
-      const threadId = `01a0af-${String(threadCounter++).padStart(6, '0')}`;
+      const threadId = params?.sessionId || `01a0af-${String(threadCounter++).padStart(6, '0')}`;
       const model = params?.model || 'gpt-5.6-luna';
       const cwd = params?.cwd || process.cwd();
       const ephemeral = Boolean(params?.ephemeral);
       const threadObj = {
         id: threadId,
-        sessionId: threadId,
+        sessionId: params?.sessionId || threadId,
         source: 'vscode',
         ephemeral,
         cwd
@@ -106,7 +106,7 @@ rl.on('line', (line) => {
             const ack = {
               handoffId: manifest.handoffId,
               runId: manifest.runId,
-              newSessionId: thread.thread.id,
+              newSessionId: thread.thread.sessionId || thread.thread.id,
               effectiveModel: { provider: 'openai', model: thread.model, effort: thread.reasoningEffort },
               verifiedInputHeadHash: manifest.inputLedgerHeadHash,
               verifiedTaskSnapshotHash: manifest.taskSnapshotHash,

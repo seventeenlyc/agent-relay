@@ -45,6 +45,8 @@ export interface ThreadStartParams {
   approvalPolicy?: string;
   baseInstructions?: string;
   developerInstructions?: string;
+  sessionId?: string;
+  [key: string]: unknown;
 }
 
 export interface ThreadStartResponse {
