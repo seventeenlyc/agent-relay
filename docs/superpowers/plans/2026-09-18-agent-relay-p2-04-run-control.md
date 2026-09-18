@@ -6150,7 +6150,7 @@ test('cli: the real bin shim writes a durable intent visible to the supervisor p
   assert.strictEqual(pending.length, 1);
   assert.strictEqual(pending[0].kind, 'stop_now');
   assert.strictEqual(pending[0].watermark, 1);
-  assert.strictEqual(store.getRun('run-cli-1')?.state, 'RUNNING', 'the shim must not drive the run itself');
+  assert.strictEqual(supervisorStore.getRun('run-cli-1')?.state, 'RUNNING', 'the shim must not drive the run itself');
 
   supervisorDb.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
@@ -6227,7 +6227,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { RelayDatabase } from '../../controller/src/run/db.ts';
 import { RunStore, TERMINAL_RUN_STATES, type RunRecord } from '../../controller/src/run/store.ts';
-import { ControlIntentLog, type ControlIntentKind } from '../../controller/src/run/intent.ts';
+import { ControlIntentLog } from '../../controller/src/run/intent.ts';
+// ControlIntentKind 由 store.ts 声明；intent.ts 只是引用它，并不再导出。
+import type { ControlIntentKind } from '../../controller/src/run/store.ts';
 import { SessionChainLedger } from '../../controller/src/run/chain.ts';
 import { buildRunStatus, renderStatusCard, renderStatusJson } from '../../controller/src/run/status.ts';
 import { renderChain } from './render.ts';
@@ -6345,13 +6347,16 @@ function resolveRun(store: RunStore, requested: string | undefined): RunRecord {
   }
 
   const active = store.listRuns().filter((run) => !isTerminal(run));
-  if (active.length === 0) {
+  // 活动 run 为空时退回到全部 run：唯一的终态 run 也要能解析出来，
+  // 状态守卫才能按设计 §9.3 以退出码 3 拒绝，而不是错报 run 不存在（退出码 2）。
+  const candidates = active.length > 0 ? active : store.listRuns();
+  if (candidates.length === 0) {
     throw new NotFoundError('no run found; specify --run or start a run first');
   }
-  if (active.length > 1) {
-    throw new NotFoundError(`several active runs found; specify one with --run (${active.map((r) => r.runId).join(', ')})`);
+  if (candidates.length > 1) {
+    throw new NotFoundError(`several active runs found; specify one with --run (${candidates.map((r) => r.runId).join(', ')})`);
   }
-  return active[0];
+  return candidates[0];
 }
 
 function openStore(dataDir: string): { db: RelayDatabase; store: RunStore } | null {
