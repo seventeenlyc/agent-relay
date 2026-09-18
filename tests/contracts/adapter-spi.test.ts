@@ -7,6 +7,7 @@ import { ClaudeAdapter } from '../../packages/adapters/claude/src/claude-adapter
 import { ClaudeProcessRunner } from '../../packages/adapters/claude/src/runner.ts';
 import { CodexAdapter } from '../../packages/adapters/codex/src/codex-adapter.ts';
 import { CodexProcessRunner } from '../../packages/adapters/codex/src/runner.ts';
+import { DshAdapter } from '../../packages/adapters/dsh/src/dsh-adapter.ts';
 
 test('adapter-spi: MockAdapter implements AgentRelayAdapter interface', async () => {
   const adapter: AgentRelayAdapter = new MockAdapter();
@@ -138,6 +139,59 @@ test('adapter-spi: CodexAdapter implements AgentRelayAdapter interface', async (
   assert.strictEqual(afterInterrupt?.active, false);
 
   await adapter.shutdown();
+});
+
+test('adapter-spi: DshAdapter implements AgentRelayAdapter interface', async () => {
+  const mockServerPath = fileURLToPath(new URL('../fixtures/mock-dsh-sdk-server.mjs', import.meta.url));
+
+  const adapter: AgentRelayAdapter = new DshAdapter({
+    runnerOptions: {
+      binPath: process.execPath,
+      extraArgsPrefix: [mockServerPath],
+      startupGracePeriodMs: 50
+    }
+  });
+
+  const caps = adapter.capabilities();
+  assert.strictEqual(caps.level, 'L3');
+  assert.strictEqual(caps.streamJsonSupported, true);
+  assert.strictEqual(caps.modelEffortPreservation, true);
+  assert.strictEqual(caps.headlessSupported, true);
+  assert.strictEqual(caps.cancellationSupported, true);
+
+  const config: SpawnSessionConfig = {
+    sessionId: 'sess-spi-dsh',
+    runId: 'run-spi-dsh-1',
+    model: { provider: 'deepseek-official', model: 'deepseek-reasoner', effort: 'high' },
+    initialPrompt: 'echo: dsh-spi'
+  };
+
+  const inspect = await adapter.createFresh(config);
+  assert.strictEqual(inspect.sessionId, 'sess-spi-dsh');
+  assert.strictEqual(inspect.active, true);
+  assert.strictEqual(inspect.effectiveModel?.provider, 'deepseek-official');
+  assert.strictEqual(inspect.effectiveModel?.model, 'deepseek-reasoner');
+  assert.strictEqual(inspect.effectiveModel?.effort, 'high');
+
+  const inspected = await adapter.inspectSession('sess-spi-dsh');
+  assert.strictEqual(inspected?.sessionId, 'sess-spi-dsh');
+
+  const drainSuccess = await adapter.requestDrain('sess-spi-dsh', 'handoff-dsh');
+  assert.strictEqual(drainSuccess, true);
+
+  const quiescence = await adapter.awaitQuiescence('sess-spi-dsh', 1000);
+  assert.strictEqual(quiescence, 'quiescent');
+
+  const authSuccess = await adapter.authorizeExecution('sess-spi-dsh', 2, 'TOKEN_DSH_SPI');
+  assert.strictEqual(authSuccess, true);
+
+  const interrupted = await adapter.interruptOwned('sess-spi-dsh');
+  assert.strictEqual(interrupted, true);
+
+  const afterInterrupt = await adapter.inspectSession('sess-spi-dsh');
+  assert.strictEqual(afterInterrupt?.active, false);
+
+  await (adapter as any).shutdown?.();
 });
 
 
