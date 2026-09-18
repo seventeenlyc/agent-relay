@@ -2443,7 +2443,8 @@ function driveCanonicalHandshake(build: CoordinatorBuilder) {
 
   const prompt = coordinator.buildPreparationPrompt(manifest);
   assert.ok(prompt.length > 0, 'buildPreparationPrompt must return a non-empty prompt');
-  assert.match(prompt, /READ-?ONLY/i, 'the preparation prompt must declare read-only mode');
+  // Both dialects must declare read-only mode; DSH spells it `READ_ONLY`, Codex/Claude `READ-ONLY`.
+  assert.match(prompt, /READ[-_]?ONLY/i, 'the preparation prompt must declare read-only mode');
   assert.ok(prompt.includes(manifest.handoffId), 'the preparation prompt must carry the handoff id');
 
   const ack: HandoffAckPacket = {
