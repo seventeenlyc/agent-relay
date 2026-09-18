@@ -650,3 +650,40 @@ test('engine: a new session that never becomes quiescent enters recovery without
   db.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('engine: a rebuilt controller whose session is gone enters recovery without spawning a worker (V21)', async () => {
+  const { db, controller, config, dataDir, dbPath } = setup();
+  controller.startRun(config);
+  assert.strictEqual((await controller.tick()).kind, 'unit_executed');
+  db.close();
+
+  // 冷适配器：重启后旧会话已不可寻址
+  const coldAdapter = new ScriptedAdapter();
+  const restartedDb = new RelayDatabase({ dbPath });
+  const restartedStore = new RunStore(restartedDb);
+  const restarted = new RunController({
+    store: restartedStore,
+    dataDir,
+    adapter: coldAdapter,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: (deps) =>
+      new TwoPhaseHandshakeCoordinator(
+        deps.stateMachine as HandoffStateMachine,
+        deps.leaseManager as unknown as WorkspaceLeaseManager,
+        deps.workspaceKey
+      )
+  });
+  restarted.rehydrate('run-engine-1');
+
+  const outcome = await restarted.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /current_session_lost/);
+  assert.strictEqual(restartedStore.getRun('run-engine-1')?.state, 'RECOVERY_REQUIRED');
+  assert.strictEqual(coldAdapter.created.length, 0, 'a lost session must not spawn a replacement');
+  assert.strictEqual(coldAdapter.submitted.length, 0);
+  assert.strictEqual(restartedStore.listChain('run-engine-1').length, 1, 'no successor link may be appended');
+
+  restartedDb.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
