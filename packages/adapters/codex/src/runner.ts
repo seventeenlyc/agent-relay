@@ -12,6 +12,7 @@ export interface CodexProcessRunnerOptions {
   cwd?: string;
   env?: Record<string, string>;
   onStderr?: (line: string) => void;
+  startupGracePeriodMs?: number;
 }
 
 export type NotificationListener = (notification: JsonRpcNotification) => void;
@@ -30,9 +31,12 @@ export class CodexProcessRunner {
   private readonly cwd: string;
   private readonly env: Record<string, string>;
   private readonly onStderrCallback?: (line: string) => void;
+  private readonly startupGracePeriodMs: number;
 
   private process: ChildProcess | null = null;
   private startPromise: Promise<void> | null = null;
+  private rlStdout: readline.Interface | null = null;
+  private rlStderr: readline.Interface | null = null;
   private reqIdCounter = 1;
   private pendingRequests: Map<number | string, PendingRequest> = new Map();
   private notificationListeners: Set<NotificationListener> = new Set();
@@ -46,6 +50,7 @@ export class CodexProcessRunner {
     this.cwd = options.cwd || process.cwd();
     this.env = options.env || {};
     this.onStderrCallback = options.onStderr;
+    this.startupGracePeriodMs = options.startupGracePeriodMs ?? 100;
   }
 
   public start(): Promise<void> {
@@ -74,6 +79,8 @@ export class CodexProcessRunner {
 
         const rlStdout = readline.createInterface({ input: proc.stdout! });
         const rlStderr = readline.createInterface({ input: proc.stderr! });
+        this.rlStdout = rlStdout;
+        this.rlStderr = rlStderr;
 
         rlStdout.on('line', (line) => {
           this.rawLines.push(line);
@@ -99,25 +106,33 @@ export class CodexProcessRunner {
 
         let settled = false;
 
-        proc.once('error', (err) => {
+        proc.on('error', (err) => {
+          this.cleanupProcess();
           if (!settled) {
             settled = true;
             clearTimeout(initTimer);
-            this.cleanupProcess();
             reject(err);
           }
         });
 
         proc.once('close', () => {
-          this.cleanupProcess();
-        });
-
-        proc.once('exit', (code) => {
-          if (!settled && code !== 0 && code !== null) {
+          if (!settled) {
             settled = true;
             clearTimeout(initTimer);
             this.cleanupProcess();
-            reject(new Error(`Codex process exited immediately with code ${code}`));
+            reject(new Error('Codex process closed prematurely during startup'));
+          } else {
+            this.cleanupProcess();
+          }
+        });
+
+        proc.once('exit', (code, signal) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(initTimer);
+            this.cleanupProcess();
+            const exitDetail = code !== null ? `code ${code}` : `signal ${signal}`;
+            reject(new Error(`Codex process exited prematurely during startup with ${exitDetail}`));
           }
         });
 
@@ -127,7 +142,7 @@ export class CodexProcessRunner {
             settled = true;
             resolve();
           }
-        }, 20);
+        }, this.startupGracePeriodMs);
       } catch (err) {
         this.cleanupProcess();
         reject(err as Error);
@@ -138,7 +153,12 @@ export class CodexProcessRunner {
   }
 
   public isRunning(): boolean {
-    return this.process !== null && !this.process.killed && this.process.exitCode === null;
+    return (
+      this.process !== null &&
+      !this.process.killed &&
+      this.process.exitCode === null &&
+      this.process.signalCode === null
+    );
   }
 
   public onNotification(listener: NotificationListener): () => void {
@@ -203,15 +223,21 @@ export class CodexProcessRunner {
     const proc = this.process;
     return new Promise((resolve) => {
       let resolved = false;
+      let forceTimer: NodeJS.Timeout | null = null;
+
       const finish = () => {
         if (!resolved) {
           resolved = true;
+          if (forceTimer) {
+            clearTimeout(forceTimer);
+            forceTimer = null;
+          }
           this.cleanupProcess();
           resolve();
         }
       };
 
-      if (proc.exitCode !== null) {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
         finish();
         return;
       }
@@ -227,16 +253,9 @@ export class CodexProcessRunner {
         // Ignore stdin end error
       }
 
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        finish();
-        return;
-      }
-
-      const forceTimer = setTimeout(() => {
+      forceTimer = setTimeout(() => {
         try {
-          if (proc.exitCode === null) {
+          if (proc.exitCode === null && proc.signalCode === null) {
             proc.kill('SIGKILL');
           }
         } catch {}
@@ -244,6 +263,13 @@ export class CodexProcessRunner {
       }, 500);
       if (typeof forceTimer.unref === 'function') {
         forceTimer.unref();
+      }
+
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        finish();
+        return;
       }
     });
   }
@@ -305,6 +331,18 @@ export class CodexProcessRunner {
   }
 
   private cleanupProcess(): void {
+    if (this.rlStdout) {
+      try {
+        this.rlStdout.close();
+      } catch {}
+      this.rlStdout = null;
+    }
+    if (this.rlStderr) {
+      try {
+        this.rlStderr.close();
+      } catch {}
+      this.rlStderr = null;
+    }
     for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timer);
       pending.reject(new Error('Codex process terminated'));

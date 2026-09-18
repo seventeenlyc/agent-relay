@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/**/*.test.ts",
+    "test": "node --experimental-strip-types --test tests/adapters/*.test.ts tests/contracts/*.test.ts tests/policy/*.test.ts tests/scenarios/*.test.ts tests/transactions/*.test.ts tests/workspace/*.test.ts",
     "test:contracts": "node --experimental-strip-types --test tests/contracts/*.test.ts",
     "test:scenarios": "node --experimental-strip-types --test tests/scenarios/*.test.ts"
   }

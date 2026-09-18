@@ -192,6 +192,9 @@ rl.on('line', (line) => {
           turns: params?.includeTurns ? thread.turns : []
         }
       });
+    } else if (method === 'test/hang') {
+      // Intentionally do not respond to test client timeout
+      return;
     } else {
       sendResponse(id, null, { code: -32601, message: `Method not found: ${method}` });
     }

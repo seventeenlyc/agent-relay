@@ -120,19 +120,19 @@ test('codex-runner: handles request timeout correctly', async () => {
   });
 
   await runner.start();
-
-  // Mock server takes ~30ms to emit turn items, but turn/start responds immediately.
-  // We send a request with an impossibly low timeout to verify timeout rejection.
-  await assert.rejects(
-    async () => {
-      await runner.sendRequest('initialize', {}, 0);
-    },
-    {
-      message: /timed out after 0ms/
-    }
-  );
-
-  await runner.terminate();
+  try {
+    // Send request that server does not respond to with a 50ms timeout
+    await assert.rejects(
+      async () => {
+        await runner.sendRequest('test/hang', {}, 50);
+      },
+      {
+        message: /timed out after 50ms/
+      }
+    );
+  } finally {
+    await runner.terminate();
+  }
 });
 
 test('codex-runner: isolates consumer callback exceptions and supports listener unsubscribe', async () => {
@@ -172,20 +172,73 @@ test('codex-runner: isolates consumer callback exceptions and supports listener 
   await runner.terminate();
 });
 
-test('codex-runner: caps rawLines and events buffers to 500 entries', async () => {
+test('codex-runner: caps rawLines, stderrLines, and events buffers to 500 entries with FIFO eviction', async () => {
+  const script = [
+    'for (let i = 1; i <= 550; i++) {',
+    '  console.log(JSON.stringify({ jsonrpc: "2.0", method: "test/event", params: { index: i } }));',
+    '  console.error("stderr-" + i);',
+    '}',
+    'process.stdin.resume();'
+  ].join('\n');
+
   const runner = new CodexProcessRunner({
     binPath: process.execPath,
-    extraArgsPrefix: [MOCK_SERVER_PATH]
+    extraArgsPrefix: ['-e', script]
   });
 
   await runner.start();
 
-  // Verify getters return arrays
-  assert.ok(Array.isArray(runner.getRawLines()));
-  assert.ok(Array.isArray(runner.getStderrLines()));
-  assert.ok(Array.isArray(runner.getEvents()));
+  // Wait for buffer to fill to 500
+  const start = Date.now();
+  while (runner.getEvents().length < 500 && Date.now() - start < 3000) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  const rawLines = runner.getRawLines();
+  const stderrLines = runner.getStderrLines();
+  const events = runner.getEvents();
+
+  assert.strictEqual(rawLines.length, 500);
+  assert.strictEqual(stderrLines.length, 500);
+  assert.strictEqual(events.length, 500);
+
+  // FIFO eviction verification: older items 1..50 must be shifted out, items 51..550 retained
+  assert.strictEqual((events[0]?.params as any)?.index, 51);
+  assert.strictEqual((events[499]?.params as any)?.index, 550);
+  assert.strictEqual(stderrLines[0], 'stderr-51');
+  assert.strictEqual(stderrLines[499], 'stderr-550');
 
   await runner.terminate();
+});
+
+test('codex-runner: rejects start() if process exits prematurely during startup (code 0 or non-zero)', async () => {
+  const runnerCode0 = new CodexProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: ['-e', 'process.exit(0)']
+  });
+
+  await assert.rejects(
+    async () => {
+      await runnerCode0.start();
+    },
+    {
+      message: /exited prematurely during startup/
+    }
+  );
+
+  const runnerCode1 = new CodexProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: ['-e', 'process.exit(1)']
+  });
+
+  await assert.rejects(
+    async () => {
+      await runnerCode1.start();
+    },
+    {
+      message: /exited prematurely during startup/
+    }
+  );
 });
 
 test('codex-runner: rejects sendRequest when process is not running or terminated', async () => {
