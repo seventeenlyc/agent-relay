@@ -121,6 +121,9 @@ CREATE TABLE IF NOT EXISTS runs (
   workspace_key              TEXT NOT NULL,
   workspace_path             TEXT NOT NULL,
   goal                       TEXT NOT NULL,
+  provider                   TEXT NOT NULL DEFAULT 'unknown',
+  model                      TEXT NOT NULL DEFAULT 'unknown',
+  effort                     TEXT,
   state                      TEXT NOT NULL,
   current_session_id         TEXT,
   current_epoch              INTEGER NOT NULL DEFAULT 1,
@@ -137,7 +140,7 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at                 INTEGER NOT NULL,
   updated_at                 INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_workspace
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_active_workspace
   ON runs(workspace_key) WHERE state NOT IN ('CANCELLED','COMPLETED','DISABLED');
 
 CREATE TABLE IF NOT EXISTS control_intents (
@@ -235,7 +238,7 @@ CREATE TABLE IF NOT EXISTS ledger_events (
 
 ### 4.2 关键约束
 
-- `idx_runs_workspace`：**同一工作区同时最多一个活动 run**（V34「重复启用同一工作区返回既有 run」）。终态 run 不占用该唯一索引。
+- `idx_runs_active_workspace`：**同一工作区同时最多一个活动 run**（V34「重复启用同一工作区返回既有 run」）。终态 run 不占用该唯一索引。
 - `handoffs.handoff_id` 为主键：同一 handoff 的重试与重复回调自然去重（V13）。
 - `control_intents(run_id, watermark)` 唯一：水位在事务内取 `MAX(watermark)+1`，并发追加不会重号。
 - `lease_state` 是**全局表**，其余表按 `run_id` 分区。

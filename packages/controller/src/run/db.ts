@@ -186,34 +186,37 @@ export class RelayDatabase {
    */
   public transaction<T>(fn: () => T): T {
     const isOuter = this.depth === 0;
+    const entryDepth = this.depth;
     if (isOuter) {
       this.handle.exec('BEGIN IMMEDIATE');
     } else {
-      this.handle.exec(`SAVEPOINT relay_sp_${this.depth}`);
+      this.handle.exec(`SAVEPOINT relay_sp_${entryDepth}`);
     }
-    this.depth++;
+    this.depth = entryDepth + 1;
     try {
       const result = fn();
-      this.depth--;
       if (isOuter) {
         this.handle.exec('COMMIT');
       } else {
-        this.handle.exec(`RELEASE relay_sp_${this.depth}`);
+        this.handle.exec(`RELEASE relay_sp_${entryDepth}`);
       }
       return result;
     } catch (err) {
-      this.depth--;
       try {
         if (isOuter) {
           this.handle.exec('ROLLBACK');
         } else {
-          this.handle.exec(`ROLLBACK TO relay_sp_${this.depth}`);
-          this.handle.exec(`RELEASE relay_sp_${this.depth}`);
+          this.handle.exec(`ROLLBACK TO relay_sp_${entryDepth}`);
+          this.handle.exec(`RELEASE relay_sp_${entryDepth}`);
         }
       } catch {
         // 回滚失败时保留原始错误，交由上层处理
       }
       throw err;
+    } finally {
+      // 必须在所有退出路径上恰好恢复一次：COMMIT/RELEASE 失败也不能让 depth 偏移，
+      // 否则后续事务会生成非法 savepoint 名（relay_sp_-1）并让连接永久不可用
+      this.depth = entryDepth;
     }
   }
 
