@@ -3494,7 +3494,10 @@ test('status: view reports goal, progress, verification, handoff, model and cont
   assert.strictEqual(view.handoff?.toSessionId, 'worker-C');
   assert.strictEqual(view.handoff?.epoch, 3);
   assert.strictEqual(view.model?.model, 'deepseek-reasoner');
-  assert.strictEqual(view.control.nextAction, 'Execute Unit 3: Autoregressive Decoder');
+  // 当前单元（u2，in_progress）就是正在执行的单元，因此下一动作是继续执行它——
+  // 与设计文档 §8.1 的示例一致（当前 Unit 3 对应下一动作 执行 Unit 3）。
+  // 只有当运行停在单元之间时，当前单元才是第一个 pending 单元。
+  assert.strictEqual(view.control.nextAction, 'Execute Unit 2: Transformer Encoder');
   assert.strictEqual(view.control.paused, false);
   db.close();
 });
@@ -3522,7 +3525,7 @@ test('status: card renders the Chinese status card shape from 03-技术设计.md
   assert.match(card, /^验证: Unit 1 已通过 · 证据 evidence-u1/m);
   assert.match(card, /^交接: h-2 · worker-B → worker-C · epoch 3/m);
   assert.match(card, /^模型: deepseek-official \/ deepseek-reasoner \(effort: high\)/m);
-  assert.match(card, /^控制: 无暂停 · 下一动作: Execute Unit 3/m);
+  assert.match(card, /^控制: 无暂停 · 下一动作: Execute Unit 2/m);
   db.close();
 });
 
