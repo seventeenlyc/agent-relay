@@ -4666,8 +4666,11 @@ test('engine: rehydrate rebuilds ledger and task graph hashes verbatim (V22)', a
   const secondController = new RunController({
     store: secondStore,
     dataDir,
-    adapter: new ScriptedAdapter(),
+    // 同一适配器实例＝重启后会话仍存活（真实场景由适配器重新附着旧会话）。
+    // 用冷适配器会让本次 tick 直接短路成 current_session_lost，从而什么都没验证到。
+    adapter: first.adapter,
     adapterName: 'claude',
+    notifier: new RecordingNotifier(),
     createCoordinator: (deps) =>
       new TwoPhaseHandshakeCoordinator(
         deps.stateMachine as HandoffStateMachine,
@@ -4679,14 +4682,145 @@ test('engine: rehydrate rebuilds ledger and task graph hashes verbatim (V22)', a
   secondController.rehydrate('run-engine-1');
   assert.deepStrictEqual(secondController.getInvariantHashes(), hashes);
 
-  // The rebuilt run continues correctly instead of restarting from scratch
-  await secondController.tick();
+  // 重建后的 run 必须真的继续推进，而不是停在 current_session_lost
+  const resumed = await secondController.tick();
+  assert.strictEqual(resumed.kind, 'handoff_performed', 'the rebuilt run must continue, not recover');
+  const advanced = await secondController.tick();
+  assert.strictEqual(advanced.kind, 'unit_executed');
+  assert.strictEqual((advanced as { taskId: string }).taskId, 'u2');
+
   const tasks = JSON.parse(secondStore.getLatestTaskSnapshot('run-engine-1')!.snapshotJson) as Array<{
     status: string;
   }>;
   assert.strictEqual(tasks[0].status, 'completed', 'restored task state must be preserved');
+  assert.strictEqual(tasks[1].status, 'completed', 'the rebuilt run must have completed the next unit');
 
   secondDb.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a pause arriving mid-handoff can still be resumed afterwards (V20)', async () => {
+  let intents: ControlIntentLog | null = null;
+  let injected = false;
+  const adapter = new ScriptedAdapter({
+    onCreateFresh: (sessionId) => {
+      // 只注入一次：交接被阻塞后重试会复用同一个会话 id（放弃的那次没有追加链链接），
+      // 若每次 createFresh 都注入，重试会再次被停住，场景就不是"一个窗口内到达一次暂停"了。
+      if (!injected && sessionId.endsWith('-s2')) {
+        injected = true;
+        intents!.append('run-engine-1', 'pause_next_node');
+      }
+    }
+  });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+  controller.startRun(config);
+  intents = new ControlIntentLog(store);
+
+  await controller.tick(); // unit 1 in s1
+  assert.strictEqual((await controller.tick()).kind, 'paused');
+
+  // 被阻塞的那次 pause 必须已被消费，否则它会一直压过 resume
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'PAUSED');
+  assert.strictEqual(store.listPendingIntents('run-engine-1').length, 0);
+  assert.strictEqual(store.getHandoff('h-run-engine-1-1')?.state, 'ABANDONED');
+
+  intents.append('run-engine-1', 'resume');
+  const resumed = await controller.tick();
+  assert.strictEqual(resumed.kind, 'handoff_performed', 'resume must be able to leave PAUSED');
+
+  const outcomes = await controller.executeUntilSettled();
+  assert.strictEqual(outcomes[outcomes.length - 1].kind, 'completed');
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'COMPLETED');
+  // 放弃的那次交接被重试，而不是被当成重复回调而阻塞
+  assert.strictEqual(store.getHandoff('h-run-engine-1-1')?.state, 'COMPLETED');
+  assert.strictEqual(store.getRun('run-engine-1')?.handoffCount, 3);
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a rebuilt controller whose session is gone enters recovery without spawning a worker (V21)', async () => {
+  const { db, controller, config, dataDir, dbPath } = setup();
+  controller.startRun(config);
+  assert.strictEqual((await controller.tick()).kind, 'unit_executed');
+  db.close();
+
+  // 冷适配器：重启后旧会话已不可寻址
+  const coldAdapter = new ScriptedAdapter();
+  const restartedDb = new RelayDatabase({ dbPath });
+  const restartedStore = new RunStore(restartedDb);
+  const restarted = new RunController({
+    store: restartedStore,
+    dataDir,
+    adapter: coldAdapter,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: (deps) =>
+      new TwoPhaseHandshakeCoordinator(
+        deps.stateMachine as HandoffStateMachine,
+        deps.leaseManager as unknown as WorkspaceLeaseManager,
+        deps.workspaceKey
+      )
+  });
+  restarted.rehydrate('run-engine-1');
+
+  const outcome = await restarted.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /current_session_lost/);
+  assert.strictEqual(restartedStore.getRun('run-engine-1')?.state, 'RECOVERY_REQUIRED');
+  assert.strictEqual(coldAdapter.created.length, 0, 'a lost session must not spawn a replacement');
+  assert.strictEqual(coldAdapter.submitted.length, 0);
+  assert.strictEqual(restartedStore.listChain('run-engine-1').length, 1, 'no successor link may be appended');
+
+  restartedDb.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: the no-progress counter survives a controller restart (V23)', async () => {
+  const adapter = new ScriptedAdapter({
+    unitReplies: { u1: { status: 'failed', summary: 'build broken' } }
+  });
+  const { db, store, controller, config, dataDir, dbPath } = setup({ adapter });
+
+  controller.startRun(config);
+  await controller.tick(); // 失败 1
+  await controller.tick(); // 交接
+  await controller.tick(); // 失败 2（新会话里）
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'RUNNING');
+  assert.strictEqual(
+    store.listEvents('run-engine-1').filter((e) => e.type === 'unit_failed').length,
+    2
+  );
+  db.close();
+
+  // 重启：同一数据库、同一适配器实例（会话仍存活）
+  const restartedDb = new RelayDatabase({ dbPath });
+  const restartedStore = new RunStore(restartedDb);
+  const restarted = new RunController({
+    store: restartedStore,
+    dataDir,
+    adapter,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: (deps) =>
+      new TwoPhaseHandshakeCoordinator(
+        deps.stateMachine as HandoffStateMachine,
+        deps.leaseManager as unknown as WorkspaceLeaseManager,
+        deps.workspaceKey
+      )
+  });
+  restarted.rehydrate('run-engine-1');
+
+  const outcomes = await restarted.executeUntilSettled();
+  assert.strictEqual(outcomes[outcomes.length - 1].kind, 'blocked', 'the third identical failure must block');
+  assert.match(restartedStore.getRun('run-engine-1')?.blockedReason ?? '', /loop_detected_u1/);
+  assert.strictEqual(
+    restartedStore.listEvents('run-engine-1').filter((e) => e.type === 'unit_failed').length,
+    3,
+    'the counter must have been rebuilt from the event log, not restarted at zero'
+  );
+
+  restartedDb.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 ```
@@ -5113,8 +5247,8 @@ export class RunController {
     // 这样「任何写入者都经过一次授权」在首个会话上也成立，并且适配器侧可观测（§6.2）。
     // 令牌格式与 state machine 的 issueExecutionToken 一致，epoch 即该会话刚获得的租约 epoch。
     const initialToken = `EXEC_TOKEN_${randomUUID()}`;
-    const initialAuthorized = await this.adapter.authorizeExecution(sessionId, run.currentEpoch, initialToken);
-    if (!initialAuthorized) {
+    const authorized = await this.adapter.authorizeExecution(sessionId, run.currentEpoch, initialToken);
+    if (!authorized) {
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: 'first_session_authorize_failed'
       });
@@ -5260,21 +5394,32 @@ export class RunController {
       })
     );
     if (!inserted) {
-      this.store.updateRunState(this.runId, 'BLOCKED', { blockedReason: 'duplicate_handoff_id' });
+      const existing = this.store.getHandoff(handoffId);
+      // 只有被放弃的同一次交接可以重试；已请求/已授权/已完成的交接重复出现才是真正的重复回调（V13）。
+      if (!existing || existing.state !== 'ABANDONED') {
+        this.store.updateRunState(this.runId, 'BLOCKED', { blockedReason: 'duplicate_handoff_id' });
+        this.events.record({
+          runId: this.runId,
+          type: 'run_blocked',
+          payload: { reason: 'duplicate_handoff_id', handoffId }
+        });
+        this.persistStatusProjection();
+        return { kind: 'blocked', reason: 'duplicate_handoff_id' };
+      }
       this.events.record({
         runId: this.runId,
-        type: 'run_blocked',
-        payload: { reason: 'duplicate_handoff_id', handoffId }
+        type: 'handoff_retried',
+        sessionId: fromSessionId,
+        payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
       });
-      this.persistStatusProjection();
-      return { kind: 'blocked', reason: 'duplicate_handoff_id' };
+    } else {
+      this.events.record({
+        runId: this.runId,
+        type: 'handoff_requested',
+        sessionId: fromSessionId,
+        payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
+      });
     }
-    this.events.record({
-      runId: this.runId,
-      type: 'handoff_requested',
-      sessionId: fromSessionId,
-      payload: { handoffId, taskId: task.taskId, epoch: run.currentEpoch }
-    });
 
     // 步骤 2：旧 worker 收尾并确认静止
     this.stateMachine = new HandoffStateMachine(this.runId, fromSessionId, run.currentEpoch);
@@ -5418,20 +5563,30 @@ export class RunController {
     });
 
     if ('blockedBy' in transactionResult) {
+      const blocker = transactionResult.blockedBy;
+      // 暂停已经生效，触发阻塞的 pause_next_node 已被满足，必须消费掉——
+      // 否则它会在 PAUSED 守卫里长期压过 resume，把 run 永久卡住。
+      if (blocker.kind === 'pause_next_node') {
+        this.intents.consume(blocker.intentId);
+      }
+      // 这次交接没有完成：标记为放弃，使同一 handoff id 的重试不再被误判为重复回调（V13）。
+      this.store.transaction(() => {
+        this.store.updateHandoff(handoffId, { state: 'ABANDONED' });
+      });
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
-        pauseReason: `control_intent_${transactionResult.blockedBy.kind}`
+        pauseReason: `control_intent_${blocker.kind}`
       });
       this.events.record({
         runId: this.runId,
         type: 'handoff_blocked_by_control_intent',
         sessionId: toSessionId,
-        payload: { handoffId, intentId: transactionResult.blockedBy.intentId }
+        payload: { handoffId, intentId: blocker.intentId }
       });
       this.persistStatusProjection();
       return {
         kind: 'paused',
-        intentId: transactionResult.blockedBy.intentId,
+        intentId: blocker.intentId,
         reason: 'control_intent_arrived_during_handoff'
       };
     }
@@ -5454,6 +5609,10 @@ export class RunController {
     // 防御性复核：交接包含 await，意图可能在事务提交后、授权前到达
     const lateIntent = this.intents.resolve(this.runId);
     if (lateIntent) {
+      // 与阻塞路径同理：暂停已经被 PAUSED 状态满足，留着会压过 resume
+      if (lateIntent.kind === 'pause_next_node') {
+        this.intents.consume(lateIntent.intentId);
+      }
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
         pauseReason: `control_intent_${lateIntent.kind}`
