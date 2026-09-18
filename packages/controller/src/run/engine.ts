@@ -31,6 +31,33 @@ import {
 } from './prompt.ts';
 import { buildRunStatus, writeStateProjection } from './status.ts';
 
+export type FaultInjectionPoint =
+  | 'before_intent_record'
+  | 'after_intent_record'
+  | 'before_old_drain'
+  | 'after_old_quiescence'
+  | 'during_snapshot_write'          // 模拟快照写到一半断电产生损坏文件 (V16)
+  | 'after_snapshot_file_written'    // 模拟快照已落盘但数据库事务未提交 (孤立文件 V16)
+  | 'after_db_publish'
+  | 'before_session_create_call'     // outbox 记录已落盘，但未调用适配器 (V14)
+  | 'session_create_response_lost'   // 适配器会话已创建，但主控未收到响应即崩溃 (V14)
+  | 'during_readonly_prep'           // 只读准备中崩溃
+  | 'after_ack_received'             // ACK 已收到，但 CAS 事务前崩溃
+  | 'after_owner_cas'                // CAS 已转让，但继续令牌投递前崩溃 (V17)
+  | 'after_token_dispatch'           // 令牌已投递，首个写操作前崩溃
+  | 'during_first_write';
+
+export interface FaultContext {
+  runId: string;
+  handoffId?: string;
+  sessionId?: string;
+  epoch?: number;
+  stage?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type FaultHook = (point: FaultInjectionPoint, context: FaultContext) => Promise<void> | void;
+
 export interface StartRunConfig {
   runId: string;
   goal: string;
@@ -69,6 +96,7 @@ export interface RunControllerOptions {
   quiescenceTimeoutMs?: number;
   settleTimeoutMs?: number;
   maxActiveDurationMs?: number;
+  faultHook?: FaultHook;
 }
 
 export type RunTickOutcome =
@@ -97,6 +125,7 @@ export class RunController {
   private readonly settleTimeoutMs: number;
   private readonly maxActiveDurationMs: number;
   private readonly packager = new HandoffPackager();
+  private readonly faultHook?: FaultHook;
 
   private readonly events: RunEventLog;
   private readonly intents: ControlIntentLog;
@@ -128,6 +157,13 @@ export class RunController {
     this.chain = new SessionChainLedger(this.store);
     this.leaseManager = new DurableLeaseManager(this.store);
     this.triggerPolicy = new TriggerPolicy({ maxActiveDurationMs: this.maxActiveDurationMs });
+    this.faultHook = options.faultHook;
+  }
+
+  private async triggerFaultHook(point: FaultInjectionPoint, ctx: FaultContext = {} as FaultContext): Promise<void> {
+    if (this.faultHook) {
+      await this.faultHook(point, { runId: this.runId, ...ctx });
+    }
   }
 
   // ─── 生命周期 ───
@@ -486,6 +522,7 @@ export class RunController {
       payload: { taskId: task.taskId }
     });
 
+    await this.triggerFaultHook('during_first_write', { sessionId, metadata: { taskId: task.taskId } });
     await this.adapter.submit(sessionId, `unit-${task.taskId}-${randomUUID()}`, prompt, run.currentEpoch);
 
     const quiescence = await this.adapter.awaitQuiescence(sessionId, this.quiescenceTimeoutMs);
@@ -662,6 +699,7 @@ export class RunController {
     this.store.updateRunState(this.runId, 'CHECKPOINTED');
 
     // 步骤 3：先完整写快照文件，再在事务内发布引用（V16）
+    await this.triggerFaultHook('during_snapshot_write', { handoffId, sessionId: fromSessionId, epoch: run.currentEpoch });
     const manifest = this.packager.createManifest({
       handoffId,
       runId: this.runId,
@@ -673,6 +711,7 @@ export class RunController {
       sentinel: this.sentinel ?? undefined
     });
     const published = this.publishManifestFile(handoffId, manifest);
+    await this.triggerFaultHook('after_snapshot_file_written', { handoffId, sessionId: fromSessionId, epoch: run.currentEpoch });
     this.store.transaction(() => {
       this.store.updateHandoff(handoffId, {
         state: 'SNAPSHOTTED',
@@ -680,11 +719,7 @@ export class RunController {
         manifestHash: published.hash
       });
     });
-    this.events.record({
-      runId: this.runId,
-      type: 'handoff_snapshot_published',
-      payload: { handoffId, manifestPath: published.filePath, manifestHash: published.hash }
-    });
+    await this.triggerFaultHook('after_db_publish', { handoffId, sessionId: fromSessionId, epoch: run.currentEpoch });
 
     // 步骤 4：创建意图已持久化在 handoffs 行上，去重后创建只读接手会话
     const sequence = this.store.nextChainSequence(this.runId);
@@ -692,8 +727,17 @@ export class RunController {
 
     this.stateMachine.beginStarting();
     this.store.updateRunState(this.runId, 'STARTING');
+    let outboxMsgId = '';
     this.store.transaction(() => {
       this.store.updateHandoff(handoffId, { state: 'CREATING', targetSessionId: toSessionId });
+      const outbox = this.store.enqueueOutbox({
+        runId: this.runId,
+        handoffId,
+        topic: 'create_session',
+        targetSessionId: toSessionId,
+        payload: { readOnly: true }
+      });
+      outboxMsgId = outbox.msgId;
     });
     this.events.record({
       runId: this.runId,
@@ -712,6 +756,8 @@ export class RunController {
     coordinator.startNewSession(toSessionId);
     this.store.updateRunState(this.runId, 'PREPARING');
 
+    await this.triggerFaultHook('before_session_create_call', { handoffId, sessionId: toSessionId });
+
     // 步骤 5：只读门控启动，记录返回的会话 ID
     await this.adapter.createFresh({
       sessionId: toSessionId,
@@ -722,6 +768,12 @@ export class RunController {
       initialPrompt: coordinator.buildPreparationPrompt(manifest)
     });
 
+    if (outboxMsgId) {
+      this.store.updateOutboxState(outboxMsgId, 'DISPATCHED');
+    }
+    await this.triggerFaultHook('session_create_response_lost', { handoffId, sessionId: toSessionId });
+
+    await this.triggerFaultHook('during_readonly_prep', { handoffId, sessionId: toSessionId });
     const newQuiescence = await this.adapter.awaitQuiescence(toSessionId, this.quiescenceTimeoutMs);
     if (newQuiescence !== 'quiescent') {
       this.stateMachine.markRecoveryRequired();
@@ -752,6 +804,8 @@ export class RunController {
       this.persistStatusProjection();
       return { kind: 'recovery_required', reason: 'ack_not_received' };
     }
+
+    await this.triggerFaultHook('after_ack_received', { handoffId, sessionId: toSessionId });
 
     // 步骤 7：同一事务内先核对未消费意图，再做 CAS 与状态更新（§5.3 / §6.3）
     const transactionResult = this.store.transaction(() => {
@@ -823,6 +877,8 @@ export class RunController {
       return { kind: 'recovery_required', reason: authResult.error ?? 'handshake_failed' };
     }
 
+    await this.triggerFaultHook('after_owner_cas', { handoffId, sessionId: toSessionId, epoch: authResult.epoch });
+
     // 防御性复核：交接包含 await，意图可能在事务提交后、授权前到达
     const lateIntent = this.intents.resolve(this.runId);
     if (lateIntent) {
@@ -863,6 +919,8 @@ export class RunController {
       return { kind: 'recovery_required', reason: 'authorize_execution_failed' };
     }
 
+    await this.triggerFaultHook('after_token_dispatch', { handoffId, sessionId: toSessionId, epoch: authResult.epoch });
+
     this.store.transaction(() => {
       this.chain.append({
         runId: this.runId,
@@ -878,6 +936,9 @@ export class RunController {
       });
       this.chain.supersede(fromSessionId);
       this.store.updateHandoff(handoffId, { state: 'COMPLETED', targetSessionId: toSessionId });
+      if (outboxMsgId) {
+        this.store.updateOutboxState(outboxMsgId, 'ACKED');
+      }
       this.events.record({
         runId: this.runId,
         type: 'handoff_completed',
