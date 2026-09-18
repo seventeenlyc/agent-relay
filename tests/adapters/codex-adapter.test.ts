@@ -103,6 +103,7 @@ test('codex-adapter: packages/adapters/codex/src/index.ts exports all components
   const index = await import('../../packages/adapters/codex/src/index.ts');
   assert.ok(index.CodexAdapter);
   assert.ok(index.CodexProcessRunner);
+  assert.ok(index.CodexHandshakeCoordinator);
 });
 
 test('codex-adapter: generates threadId as fallback sessionId and handles awaitQuiescence timeout', async () => {
