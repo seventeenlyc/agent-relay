@@ -296,6 +296,55 @@ test('handshake: catches state machine error during verifyAckAndAuthorize', () =
   const res = coordinator.verifyAckAndAuthorize(manifest, ack);
   assert.strictEqual(res.success, false);
   assert.match(res.error || '', /Cannot receive ACK in state RUNNING/);
+  // Lease remained untouched because state machine was not in PREPARING
+  assert.strictEqual(lease.getLease('ws-1')?.currentOwner, 'session-A');
+  assert.strictEqual(lease.getLease('ws-1')?.epoch, 1);
+});
+
+test('handshake: reverts CAS lease on state machine failure with monotonic epoch', () => {
+  const lease = new WorkspaceLeaseManager();
+  lease.acquireInitialLease('ws-1', 'session-A', 1);
+
+  const sm = new HandoffStateMachine('run-1', 'session-A', 1);
+  sm.requestHandoff('unit_completed');
+  sm.checkpointCompleted();
+
+  const coordinator = new TwoPhaseHandshakeCoordinator(sm, lease, 'ws-1');
+  coordinator.startNewSession('session-B');
+  assert.strictEqual(sm.getState(), 'PREPARING');
+
+  const manifest: HandoffPackManifest = {
+    handoffId: 'h-1',
+    runId: 'run-1',
+    epoch: 1,
+    sourceSessionId: 'session-A',
+    targetModel: { provider: 'anthropic', model: 'claude-3-7-sonnet' },
+    inputLedgerHeadHash: 'input-hash-1',
+    requirementVersion: 1,
+    taskSnapshotHash: 'task-hash-1',
+    workspaceFingerprint: { commitHash: 'c1', dirtyFiles: [], untrackedFiles: [], treeHash: 'ws-hash-1' },
+    timestamp: Date.now()
+  };
+
+  // ACK with mismatched runId causes sm.receiveAck() to throw after CAS transfer
+  const badRunAck: HandoffAckPacket = {
+    handoffId: 'h-1',
+    runId: 'run-MISMATCH',
+    newSessionId: 'session-B',
+    effectiveModel: { provider: 'anthropic', model: 'claude-3-7-sonnet' },
+    verifiedInputHeadHash: 'input-hash-1',
+    verifiedTaskSnapshotHash: 'task-hash-1',
+    verifiedWorkspaceHash: 'ws-hash-1',
+    ackTimestamp: Date.now()
+  };
+
+  const res = coordinator.verifyAckAndAuthorize(manifest, badRunAck);
+  assert.strictEqual(res.success, false);
+  assert.match(res.error || '', /Run ID mismatch/);
+
+  // Reverted to sourceSessionId with monotonic epoch (newEpoch + 1 = 3)
+  assert.strictEqual(lease.getLease('ws-1')?.currentOwner, 'session-A');
+  assert.strictEqual(lease.getLease('ws-1')?.epoch, 3);
 });
 
 test('handshake: extracts HandoffAckPacket from stream or stdout text', () => {

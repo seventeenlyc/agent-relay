@@ -63,7 +63,15 @@ export class TwoPhaseHandshakeCoordinator {
       };
     }
 
-    // 4. Check lease preconditions BEFORE modifying state machine
+    // 4. Check state machine state BEFORE attempting CAS lease transfer
+    if (this.stateMachine.getState() !== 'PREPARING') {
+      return {
+        success: false,
+        error: `Cannot receive ACK in state ${this.stateMachine.getState()}`
+      };
+    }
+
+    // 5. Check lease preconditions BEFORE modifying state machine
     const currentLease = this.leaseManager.getLease(this.workspaceKey);
     if (!currentLease) {
       return { success: false, error: `No active lease for workspace ${this.workspaceKey}` };
@@ -81,7 +89,7 @@ export class TwoPhaseHandshakeCoordinator {
       };
     }
 
-    // 5. Perform CAS lease transfer
+    // 6. Perform CAS lease transfer
     const newEpoch = manifest.epoch + 1;
     const casSuccess = this.leaseManager.compareAndSetOwner(
       this.workspaceKey,
@@ -94,7 +102,7 @@ export class TwoPhaseHandshakeCoordinator {
       return { success: false, error: 'CAS lease acquisition failed' };
     }
 
-    // 6. Only AFTER successful CAS transfer, advance the state machine
+    // 7. Only AFTER successful CAS transfer, advance the state machine
     try {
       this.stateMachine.receiveAck(ack);
       const token = this.stateMachine.issueExecutionToken();
@@ -104,13 +112,13 @@ export class TwoPhaseHandshakeCoordinator {
         epoch: token.epoch
       };
     } catch (err: unknown) {
-      // Revert CAS lease on state machine failure
+      // Revert CAS lease on state machine failure with monotonically increasing epoch
       this.leaseManager.compareAndSetOwner(
         this.workspaceKey,
         ack.newSessionId,
         manifest.sourceSessionId,
         newEpoch,
-        manifest.epoch
+        newEpoch + 1
       );
       return { success: false, error: (err as Error).message };
     }
