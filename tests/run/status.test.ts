@@ -173,6 +173,67 @@ test('status: card renders the Chinese status card shape from 03-技术设计.md
   db.close();
 });
 
+test('status: the current unit index comes from array position, not from the task id', () => {
+  const db = new RelayDatabase({ dbPath: ':memory:' });
+  const store = new RunStore(db);
+  store.insertRun({
+    runId: 'run-position',
+    workspaceKey: 'ws-position',
+    workspacePath: 'C:/tmp/ws-position',
+    goal: 'Positional index',
+    state: 'RUNNING',
+    unitCount: 3
+  });
+  const tasks: TaskItem[] = [
+    { taskId: 'design-the-schema', requirementId: 'req-root', title: 'Design the schema', description: '',
+      dependencies: [], status: 'completed', allowedPaths: [], expectedArtifacts: [],
+      testEvidenceHash: 'ev-schema', completedAt: 1 },
+    { taskId: 'write-migration', requirementId: 'req-root', title: 'Write the migration', description: '',
+      dependencies: ['design-the-schema'], status: 'in_progress', allowedPaths: [], expectedArtifacts: [] },
+    { taskId: 'add-index', requirementId: 'req-root', title: 'Add the index', description: '',
+      dependencies: ['write-migration'], status: 'pending', allowedPaths: [], expectedArtifacts: [] }
+  ];
+  store.appendTaskSnapshot('run-position', 1, JSON.stringify(tasks), 'hash-position');
+
+  const view = buildRunStatus(store, 'run-position');
+  assert.strictEqual(view.progress.currentTaskId, 'write-migration');
+  assert.strictEqual(view.progress.currentTaskIndex, 2);
+  assert.match(renderStatusCard(view), /当前: Unit 2 — Write the migration/);
+
+  db.close();
+});
+
+test('status: verification reports the most recently completed unit', () => {
+  const db = new RelayDatabase({ dbPath: ':memory:' });
+  const store = new RunStore(db);
+  store.insertRun({
+    runId: 'run-verify',
+    workspaceKey: 'ws-verify',
+    workspacePath: 'C:/tmp/ws-verify',
+    goal: 'Latest evidence',
+    state: 'RUNNING',
+    unitCount: 3
+  });
+  const tasks: TaskItem[] = [
+    { taskId: 'v1', requirementId: 'req-root', title: 'First', description: '', dependencies: [],
+      status: 'completed', allowedPaths: [], expectedArtifacts: [], testEvidenceHash: 'ev-first', completedAt: 1 },
+    { taskId: 'v2', requirementId: 'req-root', title: 'Second', description: '', dependencies: ['v1'],
+      status: 'completed', allowedPaths: [], expectedArtifacts: [], testEvidenceHash: 'ev-second', completedAt: 2 },
+    { taskId: 'v3', requirementId: 'req-root', title: 'Third', description: '', dependencies: ['v2'],
+      status: 'in_progress', allowedPaths: [], expectedArtifacts: [] }
+  ];
+  store.appendTaskSnapshot('run-verify', 1, JSON.stringify(tasks), 'hash-verify');
+
+  const view = buildRunStatus(store, 'run-verify');
+  assert.strictEqual(view.progress.completed, 2);
+  assert.strictEqual(view.verification.taskId, 'v2');
+  assert.strictEqual(view.verification.taskIndex, 2);
+  assert.strictEqual(view.verification.evidenceHash, 'ev-second');
+  assert.match(renderStatusCard(view), /^验证: Unit 2 已通过 · 证据 ev-second/m);
+
+  db.close();
+});
+
 test('status: paused and blocked reasons are surfaced', () => {
   const { db, store, runId } = seedRun();
   store.updateRunState(runId, 'PAUSED', { pauseReason: 'user_pause_next_node' });
@@ -197,17 +258,37 @@ test('status: run without any snapshot or chain still renders a valid card', () 
     workspacePath: 'C:/tmp/ws-empty',
     goal: 'fresh run',
     state: 'INITIALIZING',
-    unitCount: 0
+    unitCount: 3
   });
 
   const view = buildRunStatus(store, 'run-empty');
-  assert.strictEqual(view.progress.total, 0);
+  assert.strictEqual(view.progress.total, 3);
   assert.strictEqual(view.progress.completed, 0);
   assert.strictEqual(view.progress.currentTaskId, undefined);
   assert.strictEqual(view.handoff, null);
   assert.strictEqual(view.model, null);
   assert.strictEqual(view.verification.verified, false);
-  assert.match(renderStatusCard(view), /^进度: 0\/0 单元完成/m);
+  assert.match(renderStatusCard(view), /^进度: 0\/3 单元完成/m);
+  db.close();
+});
+
+test('status: total falls back to the run unit count when no snapshot exists yet', () => {
+  const db = new RelayDatabase({ dbPath: ':memory:' });
+  const store = new RunStore(db);
+  store.insertRun({
+    runId: 'run-nosnapshot',
+    workspaceKey: 'ws-nosnapshot',
+    workspacePath: 'C:/tmp/ws-nosnapshot',
+    goal: 'Fallback denominator',
+    state: 'RUNNING',
+    unitCount: 4
+  });
+
+  const view = buildRunStatus(store, 'run-nosnapshot');
+  assert.strictEqual(view.progress.total, 4, 'total must come from the run row before any snapshot is written');
+  assert.strictEqual(view.progress.completed, 0);
+  assert.match(renderStatusCard(view), /^进度: 0\/4 单元完成/m);
+
   db.close();
 });
 
@@ -227,17 +308,26 @@ test('status: writeStateProjection writes a rebuildable state.md and is idempote
 
   const view = buildRunStatus(store, runId);
   const firstPath = writeStateProjection(dataDir, view);
-  const secondPath = writeStateProjection(dataDir, buildRunStatus(store, runId));
 
-  assert.strictEqual(firstPath, secondPath);
   assert.strictEqual(firstPath, path.join(dataDir, runId, 'state.md'));
   const content = fs.readFileSync(firstPath, 'utf8');
   assert.strictEqual(content, renderStatusCard(view), 'state.md is a projection of the authoritative view');
 
+  // 引擎每个 tick 都会重写投影；必须是真的覆盖，而不是「已存在就跳过」，
+  // 否则用户看到的 state.md 会停在第一次写入的旧内容上。
+  store.updateRunState(runId, 'PAUSED', { pauseReason: 'user_pause_next_node' });
+  const pausedView = buildRunStatus(store, runId);
+  const changedPath = writeStateProjection(dataDir, pausedView);
+  assert.strictEqual(changedPath, firstPath);
+  const changed = fs.readFileSync(changedPath, 'utf8');
+  assert.notStrictEqual(changed, content, 'a changed view must replace state.md, not be skipped');
+  assert.strictEqual(changed, renderStatusCard(pausedView));
+  assert.match(changed, /已暂停/);
+
   // 投影可从权威库完整重建（写入前先清空，证明它不是第二份真相）
   fs.rmSync(path.join(dataDir, runId), { recursive: true, force: true });
   const rebuiltPath = writeStateProjection(dataDir, buildRunStatus(store, runId));
-  assert.strictEqual(fs.readFileSync(rebuiltPath, 'utf8'), content);
+  assert.strictEqual(fs.readFileSync(rebuiltPath, 'utf8'), changed);
 
   db.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
