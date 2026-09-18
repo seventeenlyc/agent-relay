@@ -41,13 +41,19 @@ test('prompt: buildRunBriefing carries goal, forbidden items and read-only hando
   assert.ok(briefing.includes('change the public API'));
   assert.match(briefing, /generated_handoff/);
   assert.ok(briefing.includes('run-1'));
+  assert.ok(briefing.includes('ACCEPTANCE_CRITERIA:'));
+  assert.match(briefing, /not a new human authorization/i);
 });
 
 test('prompt: buildUnitPrompt emits machine-readable markers for the unit and its bounds', () => {
   const { contract, task } = makeContext();
   const prompt = buildUnitPrompt({ task, contract, runId: 'run-1' });
 
-  assert.ok(prompt.includes('TASK_ID: unit-2'), 'task id must be machine-readable');
+  // 下游的 Task 8 脚本适配器与 Task 10 的 DSH mock 用行锚定正则提取该标记，
+  // 因此这里必须断言"独占一行"，而不是子串包含：`includes('TASK_ID: unit-2')`
+  // 对 unit-20 的提示词同样成立，且缩进或行内嵌入都能骗过它。
+  assert.match(prompt, /^TASK_ID: unit-2$/m);
+  assert.strictEqual(prompt.match(/^TASK_ID:/gm)?.length, 1, 'the task marker must appear exactly once');
   assert.ok(prompt.includes('RUN_ID: run-1'));
   assert.match(prompt, /Transformer Encoder/);
   assert.match(prompt, /packages\/model/);
@@ -55,6 +61,12 @@ test('prompt: buildUnitPrompt emits machine-readable markers for the unit and it
   assert.ok(prompt.includes(UNIT_RESULT_START), 'the prompt must state the required reply format');
   assert.ok(prompt.includes(UNIT_RESULT_END));
   assert.ok(prompt.includes('"status"'));
+  assert.ok(prompt.includes('REQUIREMENT_ID: req-root'));
+  assert.ok(prompt.includes('TASK_DESCRIPTION: Implement the encoder layer'));
+  assert.ok(prompt.includes('ALLOWED_PATHS: packages/model'));
+  assert.ok(prompt.includes('EXPECTED_ARTIFACTS: packages/model/encoder.ts'));
+  assert.ok(prompt.includes('FORBIDDEN_ITEMS:'));
+  assert.ok(prompt.includes('GOALS:'));
 });
 
 test('prompt: parseUnitResult reads the last complete result block', () => {
@@ -68,10 +80,26 @@ test('prompt: parseUnitResult reads the last complete result block', () => {
   assert.strictEqual(parsed?.summary, 'tests failing');
 });
 
+test('prompt: parseUnitResult ignores a partial trailing block and keeps the last complete one', () => {
+  const complete = `${UNIT_RESULT_START}\n{"taskId":"unit-1","status":"completed","evidenceHash":"ev-1"}\n${UNIT_RESULT_END}`;
+  const partial = `${UNIT_RESULT_START}\n{"taskId":"unit-2","status":"comp`;
+
+  const parsed = parseUnitResult(`${complete}\n${partial}`);
+  assert.ok(parsed);
+  assert.strictEqual(parsed?.taskId, 'unit-1');
+  // 调用方必须自行核对 taskId 是否属于当前单元，否则会把上一单元的结果误记到进行中的单元上。
+  assert.notStrictEqual(parsed?.taskId, 'unit-2');
+});
+
 test('prompt: parseUnitResult returns null for missing, unterminated or invalid blocks', () => {
   assert.strictEqual(parseUnitResult(''), null);
   assert.strictEqual(parseUnitResult('no blocks here'), null);
   assert.strictEqual(parseUnitResult(`${UNIT_RESULT_START}\n{"taskId":"x"`), null, 'unterminated block');
+  assert.strictEqual(
+    parseUnitResult(`${UNIT_RESULT_START}\n{"taskId":"x","status":"completed"}`),
+    null,
+    'a valid-JSON block with no end marker must not be accepted'
+  );
   assert.strictEqual(parseUnitResult(`${UNIT_RESULT_START}\nnot json\n${UNIT_RESULT_END}`), null);
   assert.strictEqual(
     parseUnitResult(`${UNIT_RESULT_START}\n{"status":"completed"}\n${UNIT_RESULT_END}`),
