@@ -129,6 +129,17 @@ rl.on('line', (line) => {
         event: 'assistant/message',
         text: `EXECUTION_AUTHORIZED: ${text.slice(0, 50)}`
       });
+    } else if (/TASK_ID:\s*\S+/.test(text)) {
+      const taskId = text.match(/TASK_ID:\s*(\S+)/)[1];
+      const evidenceHash = `evidence-${taskId}`;
+      sendNotification('session.event', {
+        sessionId,
+        event: 'assistant/message',
+        text:
+          'UNIT_RESULT_START\n' +
+          JSON.stringify({ taskId, status: 'completed', evidenceHash, summary: `unit ${taskId} finished` }) +
+          '\nUNIT_RESULT_END'
+      });
     } else if (text.startsWith('echo:')) {
       sendNotification('session.event', {
         sessionId,
