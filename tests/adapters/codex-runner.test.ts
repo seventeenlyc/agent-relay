@@ -214,7 +214,8 @@ test('codex-runner: caps rawLines, stderrLines, and events buffers to 500 entrie
 test('codex-runner: rejects start() if process exits prematurely during startup (code 0 or non-zero)', async () => {
   const runnerCode0 = new CodexProcessRunner({
     binPath: process.execPath,
-    extraArgsPrefix: ['-e', 'process.exit(0)']
+    extraArgsPrefix: ['-e', 'process.exit(0)'],
+    startupGracePeriodMs: 2000
   });
 
   await assert.rejects(
@@ -228,7 +229,8 @@ test('codex-runner: rejects start() if process exits prematurely during startup 
 
   const runnerCode1 = new CodexProcessRunner({
     binPath: process.execPath,
-    extraArgsPrefix: ['-e', 'process.exit(1)']
+    extraArgsPrefix: ['-e', 'process.exit(1)'],
+    startupGracePeriodMs: 2000
   });
 
   await assert.rejects(

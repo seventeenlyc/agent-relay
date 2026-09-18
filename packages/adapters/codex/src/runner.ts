@@ -50,7 +50,7 @@ export class CodexProcessRunner {
     this.cwd = options.cwd || process.cwd();
     this.env = options.env || {};
     this.onStderrCallback = options.onStderr;
-    this.startupGracePeriodMs = options.startupGracePeriodMs ?? 100;
+    this.startupGracePeriodMs = options.startupGracePeriodMs ?? 250;
   }
 
   public start(): Promise<void> {
