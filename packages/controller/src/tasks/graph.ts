@@ -1,4 +1,4 @@
-import { validateTaskItem } from '../../../protocol/src/index.ts';
+import { computeSha256, serializeCanonicalJson, validateTaskItem } from '../../../protocol/src/index.ts';
 import type { TaskItem, TaskStatus } from '../../../protocol/src/types.ts';
 
 export class TaskGraph {
@@ -131,6 +131,11 @@ export class TaskGraph {
       return false;
     }
     return Array.from(this.tasks.values()).every((t) => t.status === 'completed' || t.status === 'cancelled');
+  }
+
+  public computeSnapshotHash(): string {
+    const sortedTasks = [...this.getAllTasks()].sort((a, b) => a.taskId.localeCompare(b.taskId));
+    return computeSha256(serializeCanonicalJson(sortedTasks));
   }
 
   public getAllTasks(): TaskItem[] {

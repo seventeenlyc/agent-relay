@@ -101,7 +101,10 @@ test('claude-adapter: generates uuid if sessionId not provided and wires hookHan
   assert.strictEqual(fresh.active, true);
 
   // Wait for raw line hook event delivery
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  const deadline = Date.now() + 1000;
+  while (!hookTriggered && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   assert.strictEqual(hookTriggered, true);
   assert.strictEqual(receivedReason, 'hook_stop');
 });
