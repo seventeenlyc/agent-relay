@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS runs (
   current_epoch              INTEGER NOT NULL DEFAULT 1,
   handoff_count              INTEGER NOT NULL DEFAULT 0,
   unit_count                 INTEGER NOT NULL,
+  -- 当前会话已执行的单元数；新会话接任时归零。用于判定是否该发起下一次交接
+  current_session_unit_count INTEGER NOT NULL DEFAULT 0,
   -- 执行权授权时的水位快照（§7 步骤 7 与「令牌消费之后」核对基准）
   authorized_input_hash      TEXT,
   authorized_contract_version INTEGER,
@@ -265,9 +267,19 @@ export type ControlIntentKind = 'pause_next_node' | 'stop_now' | 'resume' | 'dis
 ### 5.3 水位与执行权核对
 
 - 水位在追加事务内计算：`watermark = COALESCE(MAX(watermark), 0) + 1`（run 内单调递增，永不复用）。
-- 执行权授权时把当时水位写入 `runs.authorized_intent_watermark`。
-- **派发任何写操作前核对**：若当前水位 `>` 授权时水位，则未执行令牌失效，阻止新的写操作并重新整理或暂停（V19 / V33）。
-- 同一核对同时覆盖 `authorized_input_hash`（原话水位）与 `authorized_contract_version`（契约版本）。
+- 执行权授权时把当时水位写入 `runs.authorized_intent_watermark`（审计与状态卡用途）。
+- **执行权门禁以「未消费意图」为准，而非「最大水位」**：水位单调递增且永不复用，因此用一个固定的授权水位去比较会在此后永久为真。正确判据是——
+
+  ```
+  pendingIntents(runId) = 所有 consumed_at IS NULL 的意图
+  可执行 ⇔ pendingIntents 为空
+  ```
+
+  任何未消费的控制意图都会使执行令牌失效，直到该意图被处理（§6.2 的第 3～6 步会消费它们）。
+
+- **原子性要求**：第 7 步的租约 CAS 必须在**一个事务内**先读取 `pendingIntents`，非空则**不执行 CAS**（新会话保持只读，旧 owner 仍持有租约，即「重新整理或暂停」语义）。这样「CAS 之后、令牌消费之前」的控制意图窗口在事务层面不存在。
+- 事务提交后、调用 `authorizeExecution` **之前**再核对一次 `pendingIntents`（因为交接过程包含 `await`，意图可能在等待期间到达）；若非空则跳过授权、中断新会话、进入 `PAUSED`。
+- 同一核对同时覆盖 `authorized_input_hash`（原话水位）与 `authorized_contract_version`（契约版本修订使旧包与 ACK 失效）。
 
 ---
 
@@ -339,9 +351,9 @@ export interface CoordinatorDeps {
 export type RunTickOutcome =
   | { kind: 'unit_executed'; taskId: string; status: 'completed' | 'partial' | 'failed' }
   | { kind: 'handoff_performed'; handoffId: string; fromSessionId: string; toSessionId: string; epoch: number }
-  | { kind: 'paused'; intentId: string }
-  | { kind: 'stopped'; intentId: string }
-  | { kind: 'disabled'; intentId: string }
+  | { kind: 'paused'; intentId?: string; reason?: string }
+  | { kind: 'stopped'; intentId?: string }
+  | { kind: 'disabled'; intentId?: string }
   | { kind: 'completed' }
   | { kind: 'blocked'; reason: string }
   | { kind: 'recovery_required'; reason: string };
@@ -360,19 +372,30 @@ export class RunController {
 
 ### 6.2 单个 tick 的判定顺序
 
+意图优先级：**`stop_now` > `disable` > `pause_next_node` > `resume`**（同级取最小水位，保证确定性与可重放）。
+
 ```
-1. drainIntents()           读未消费意图 → 停止类优先
-2. if stop_now     → 中断所属会话 → awaitQuiescence → 确认静止? CANCELLED : RECOVERY_REQUIRED
-3. if pause_next_node → 整理当前检查点 → PAUSED（不创建下一 worker）
-4. if disable      → DISABLED
-5. if resume       → PAUSED→CHECKPOINTED 重新核对 → 继续
-6. assertExecutable()  核对水位/输入哈希/契约版本未失效
-7. unit = graph.nextExecutableUnit()
-8. if (!unit)      → COMPLETED，notify
-9. trigger = policy.evaluate(ctx)
-10. if (!trigger.shouldHandoff) → 原地执行该单元 → 记录 RunTickOutcome
-11. else            → performHandoff(unit)
+1. run = require(runId)
+2. if state ∈ {COMPLETED, CANCELLED, DISABLED} → 直接返回对应终态 outcome，不做任何工作
+3. pending = intentLog.resolve(runId)           # 未消费意图中优先级最高者
+   - stop_now        → consume；中断当前会话并 awaitQuiescence
+                       静止确认 → CANCELLED / 无法确认 → RECOVERY_REQUIRED（保留取消意图）
+   - disable         → consume；DISABLED
+   - pause_next_node → consume；PAUSED（完成当前单元后整理，绝不创建下一 worker）
+   - resume          → consume；stateMachine.resume()（PAUSED→CHECKPOINTED）后回到 RUNNING 继续
+4. ensureSession()   # 无存活当前会话时创建首个 worker（只读？否——首会话无前驱，直接获授权），
+                     # 追加 session_chain 链接（prevSessionId=null，reason='run_started'）并抢占初始租约
+5. task = graph.getNextActionableTask()
+   if (!task) → COMPLETED + notify → { kind: 'completed' }
+6. 触发判定：
+   needHandoff = (runs.current_session_unit_count > 0)          # 当前会话已产出过单元
+                 && 存在下一可执行单元
+                 && triggerPolicy.evaluate(ctx).shouldHandoff    # 单元完成 / 时长上限
+   - 否 → 原地执行该单元 → { kind: 'unit_executed' }
+   - 是 → performHandoff(task) → { kind: 'handoff_performed' }
 ```
+
+第 6 步的 `runs.current_session_unit_count` 是**持久化**的（§4.1），因此重启后「该不该发起交接」的判定不依赖内存状态。`resume` 后若当前会话仍然存活，则直接继续使用它，不创建多余会话。
 
 ### 6.3 交接八步（落实 `03-技术设计.md` §7）
 
@@ -615,6 +638,7 @@ agent-relay watch   [--run <id>] [--data-dir <path>] [--interval <ms>]
 | 防漂移与成本对照评测 | P3-02 |
 | 安装器、升级迁移、Windows toast、原生入口包装 | P3-03 |
 | 多 worker 并行、跨设备、跨模型切换、云端长期记忆 | `03-技术设计.md` §13 明确非必需 |
+| 计费 token / 轮次预算的实测接入 | P3-02（需真实用量数据）。P2-04 只接入**活跃时长上限**（`TriggerPolicy` 的 `duration_cap`）与 `maxTicks` 节点上限，并在状态卡中把用量显示为「未知」，不编造精确金额（§12） |
 
 ---
 
@@ -623,6 +647,8 @@ agent-relay watch   [--run <id>] [--data-dir <path>] [--interval <ms>]
 | 文件 | 改动 | 风险 |
 |---|---|---|
 | `packages/controller/src/handoff/state-machine.ts` | 新增 `beginStarting()`（`CHECKPOINTED → STARTING`）、`resume()`（`PAUSED → CHECKPOINTED`）、`markRecoveryRequired()`、`resolveRecovery()`；`startNewSession()` 允许从 `STARTING` 进入 | 低：纯新增，现有测试的 `CHECKPOINTED → PREPARING` 路径不变 |
+| `packages/controller/src/inputs/ledger.ts` | 新增 `restoreFrom(records: InputRecord[])`：逐条 `validateInputRecord`（含哈希完整性校验）后原样入账，**保留原始 inputId / timestamp / sha256Hash** | 低：纯新增。必需——否则重启后重建的账本会重新生成 ID 与时间戳，导致 `getHeadHash()` 变化，交接包里的 `inputLedgerHeadHash` 全部失效 |
+| `packages/controller/src/tasks/graph.ts` | 新增 `restoreFrom(items: TaskItem[])`：校验依赖存在性与无环后原样入图，**保留 status / testEvidenceHash / completedAt** | 低：纯新增。同上，任务快照哈希必须跨重启稳定 |
 | `packages/protocol/src/adapter.ts` | `AgentRelayAdapter` 新增 `getSessionOutput(sessionId: string): string` | 低：三个真实适配器已实现该方法 |
 | `packages/adapters/mock/src/mock-adapter.ts` | 补齐 `getSessionOutput` | 低 |
 | `packages/adapters/claude/src/handshake.ts` | 新增 `buildPreparationPrompt` / `parseAckFromOutput` 规范别名，委托既有 `generatePreparationPrompt` / `extractAckFromText`；声明实现 `HandshakeCoordinator` | 低：纯增量别名 |
