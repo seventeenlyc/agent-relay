@@ -7,7 +7,7 @@ export class HookDeduplicator {
   private eventSet: Set<string> = new Set();
 
   constructor(maxEntries = 200) {
-    this.maxEntries = maxEntries;
+    this.maxEntries = Math.max(1, maxEntries);
   }
 
   public shouldProcess(sessionId: string, hookEvent: string, hookId?: string): boolean {
@@ -34,7 +34,7 @@ export class HookDeduplicator {
   }
 }
 
-export type HandoffTriggerCallback = (sessionId: string, reason: string) => void;
+export type HandoffTriggerCallback = (sessionId: string, reason: string) => void | Promise<void>;
 
 export class ClaudeHookHandler {
   private readonly deduplicator: HookDeduplicator;
@@ -69,9 +69,12 @@ export class ClaudeHookHandler {
         const reason = isStop ? 'hook_stop' : 'hook_pre_compact';
         for (const cb of this.triggerCallbacks) {
           try {
-            cb(hookEvent.session_id, reason);
+            const res = cb(hookEvent.session_id, reason);
+            if (res && typeof (res as Promise<unknown>).catch === 'function') {
+              (res as Promise<unknown>).catch(() => {});
+            }
           } catch {
-            // Isolate callback errors
+            // Isolate synchronous callback errors
           }
         }
         return true;

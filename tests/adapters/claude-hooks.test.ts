@@ -124,3 +124,53 @@ test('hooks: deduplicator clear resets tracked hashes', () => {
   dedup.clear();
   assert.strictEqual(dedup.shouldProcess('sess-1', 'Stop', 'hook-1'), true);
 });
+
+test('hooks: deduplicator clamps maxEntries to minimum of 1', () => {
+  const dedupZero = new HookDeduplicator(0);
+  assert.strictEqual(dedupZero.shouldProcess('sess-1', 'Stop', 'hook-1'), true);
+  // Re-entry is rejected because capacity is clamped to at least 1
+  assert.strictEqual(dedupZero.shouldProcess('sess-1', 'Stop', 'hook-1'), false);
+  // Next event evicts the previous one
+  assert.strictEqual(dedupZero.shouldProcess('sess-1', 'Stop', 'hook-2'), true);
+  assert.strictEqual(dedupZero.shouldProcess('sess-1', 'Stop', 'hook-1'), true);
+});
+
+test('hooks: handler isolates synchronous throwing and asynchronous rejecting callbacks', async () => {
+  const handler = new ClaudeHookHandler();
+  const executed: string[] = [];
+
+  // Callback 1: throws synchronously
+  handler.onHandoffTrigger(() => {
+    executed.push('cb-sync-throw');
+    throw new Error('Sync callback failure');
+  });
+
+  // Callback 2: rejects asynchronously
+  handler.onHandoffTrigger(async () => {
+    executed.push('cb-async-reject');
+    throw new Error('Async callback failure');
+  });
+
+  // Callback 3: succeeds normally
+  handler.onHandoffTrigger(() => {
+    executed.push('cb-success');
+  });
+
+  const stopEvent: SystemHookEvent = {
+    type: 'system',
+    subtype: 'hook_response',
+    session_id: 'sess-isolation',
+    hook_id: 'stop-iso-1',
+    hook_name: 'Stop:supervisor',
+    hook_event: 'Stop',
+    outcome: 'success'
+  };
+
+  const processed = handler.processEvent(stopEvent);
+  assert.strictEqual(processed, true);
+
+  // Give any pending microtasks a tick
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepStrictEqual(executed, ['cb-sync-throw', 'cb-async-reject', 'cb-success']);
+});
