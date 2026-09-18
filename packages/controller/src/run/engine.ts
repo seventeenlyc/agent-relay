@@ -30,6 +30,9 @@ import {
   type UnitResultStatus
 } from './prompt.ts';
 import { buildRunStatus, writeStateProjection } from './status.ts';
+import { RunReconciler, type ReconcileResult } from './reconciler.ts';
+
+export type { ReconcileResult };
 
 export type FaultInjectionPoint =
   | 'before_intent_record'
@@ -131,6 +134,7 @@ export class RunController {
   private readonly intents: ControlIntentLog;
   private readonly chain: SessionChainLedger;
   private readonly leaseManager: DurableLeaseManager;
+  private reconciler: RunReconciler;
 
   private runId = '';
   private ledger = new InputLedger();
@@ -158,6 +162,13 @@ export class RunController {
     this.leaseManager = new DurableLeaseManager(this.store);
     this.triggerPolicy = new TriggerPolicy({ maxActiveDurationMs: this.maxActiveDurationMs });
     this.faultHook = options.faultHook;
+    this.reconciler = new RunReconciler({
+      store: this.store,
+      dataDir: this.dataDir,
+      sentinel: this.sentinel ?? undefined,
+      intents: this.intents,
+      events: this.events
+    });
   }
 
   private async triggerFaultHook(point: FaultInjectionPoint, ctx: FaultContext = {} as FaultContext): Promise<void> {
@@ -211,13 +222,26 @@ export class RunController {
     });
 
     this.loadRun(config.runId);
+    this.persistStatusProjection();
+    const baselineFingerprint = this.sentinel ? this.sentinel.captureFingerprint() : undefined;
     this.events.record({
       runId: config.runId,
       type: 'run_started',
-      payload: { goal: config.goal, workspaceKey, unitCount: config.tasks.length }
+      payload: {
+        goal: config.goal,
+        workspaceKey,
+        unitCount: config.tasks.length,
+        ...(baselineFingerprint ? { baselineFingerprint } : {})
+      }
     });
-    this.persistStatusProjection();
     return this.store.getRun(config.runId)!;
+  }
+
+  public async reconcile(): Promise<ReconcileResult> {
+    if (!this.runId) {
+      throw new Error('RunController: cannot reconcile without an active or loaded run');
+    }
+    return this.reconciler.reconcile(this.runId);
   }
 
   public rehydrate(runId: string): RunRecord | undefined {
@@ -1076,6 +1100,13 @@ export class RunController {
 
     this.runId = runId;
     this.sentinel = new WorkspaceSentinel(run.workspacePath);
+    this.reconciler = new RunReconciler({
+      store: this.store,
+      dataDir: this.dataDir,
+      sentinel: this.sentinel,
+      intents: this.intents,
+      events: this.events
+    });
     this.stateMachine = null;
     this.triggerPolicy = new TriggerPolicy({ maxActiveDurationMs: this.maxActiveDurationMs });
 
