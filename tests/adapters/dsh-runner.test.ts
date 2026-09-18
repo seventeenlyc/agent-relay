@@ -223,7 +223,11 @@ test('dsh-runner: caps stdoutBuffer, stderrBuffer, and notificationBuffer to 500
   await runner.start();
   try {
     const start = Date.now();
-    while (runner.getNotificationBuffer().length < 500 && Date.now() - start < 3000) {
+    while (
+      (runner.getNotificationBuffer().length < 500 ||
+        (runner.getNotificationBuffer()[0]?.params as any)?.index < 51) &&
+      Date.now() - start < 5000
+    ) {
       await new Promise((r) => setTimeout(r, 20));
     }
 

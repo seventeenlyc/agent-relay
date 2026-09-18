@@ -29,6 +29,8 @@ export interface ScriptedAdapterOptions {
   onAuthorize?: (sessionId: string) => void;
   /** 覆盖某个会话的静止态判定结果，用于驱动恢复路径 */
   quiescenceOverrides?: Record<string, 'quiescent' | 'timeout' | 'error'>;
+  /** 让 getSessionOutput 前 N 次返回空串，模拟输出晚于静止判定到达 */
+  outputWithheldPolls?: Record<string, number>;
 }
 
 interface ScriptedSession {
@@ -203,6 +205,11 @@ export class ScriptedAdapter implements AgentRelayAdapter {
   }
 
   public getSessionOutput(sessionId: string): string {
+    const withheld = this.options.outputWithheldPolls?.[sessionId];
+    if (withheld !== undefined && withheld > 0) {
+      this.options.outputWithheldPolls![sessionId] = withheld - 1;
+      return '';
+    }
     const session = this.sessions.get(sessionId);
     return session ? session.output.join('\n') : '';
   }

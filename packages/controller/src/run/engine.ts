@@ -26,6 +26,7 @@ import {
   buildUnitPrompt,
   normalizeUnitResult,
   parseUnitResult,
+  type UnitResult,
   type UnitResultStatus
 } from './prompt.ts';
 import { buildRunStatus, writeStateProjection } from './status.ts';
@@ -66,6 +67,7 @@ export interface RunControllerOptions {
   notifier?: Notifier;
   clock?: () => number;
   quiescenceTimeoutMs?: number;
+  settleTimeoutMs?: number;
   maxActiveDurationMs?: number;
 }
 
@@ -92,6 +94,7 @@ export class RunController {
   private readonly notifier: Notifier;
   private readonly clock: () => number;
   private readonly quiescenceTimeoutMs: number;
+  private readonly settleTimeoutMs: number;
   private readonly maxActiveDurationMs: number;
   private readonly packager = new HandoffPackager();
 
@@ -117,6 +120,7 @@ export class RunController {
     this.notifier = options.notifier ?? new ConsoleNotifier();
     this.clock = options.clock ?? (() => Date.now());
     this.quiescenceTimeoutMs = options.quiescenceTimeoutMs ?? 30_000;
+    this.settleTimeoutMs = options.settleTimeoutMs ?? 2000;
     this.maxActiveDurationMs = options.maxActiveDurationMs ?? 45 * 60 * 1000;
 
     this.events = new RunEventLog(this.store, this.notifier);
@@ -212,6 +216,27 @@ export class RunController {
       return { kind: 'recovery_required', reason: run.blockedReason ?? 'recovery_required' };
     }
 
+    // 交接中间态只有重启后才可能被看到：活着的交接在同一次 tick 内设置并清除它们，
+    // 因此在这里看到这些状态意味着控制器死在交接中途，旧会话是否已封存、租约归谁都无法推断。
+    // 此时绝不能推进单元——那会让一个不属于本会话的写入发生。
+    if (
+      run.state === 'DRAINING' ||
+      run.state === 'CHECKPOINTED' ||
+      run.state === 'STARTING' ||
+      run.state === 'PREPARING' ||
+      run.state === 'READY'
+    ) {
+      const reason = `run_found_mid_handoff:${run.state}`;
+      this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', { blockedReason: reason });
+      this.events.record({
+        runId: this.runId,
+        type: 'recovery_required',
+        payload: { reason }
+      });
+      this.persistStatusProjection();
+      return { kind: 'recovery_required', reason };
+    }
+
     // PAUSED 是静止态：只有 resume（继续）或停止类意图（stop_now / disable）才能离开，
     // 否则必须原地停住——暂停期间绝不发起交接（V20）。
     if (run.state === 'PAUSED') {
@@ -292,7 +317,6 @@ export class RunController {
   ): Promise<RunTickOutcome | null> {
     switch (pending.kind) {
       case 'stop_now': {
-        this.intents.consume(pending.intentId);
         this.events.record({
           runId: this.runId,
           type: 'control_stop_received',
@@ -304,6 +328,9 @@ export class RunController {
           await this.adapter.interruptOwned(sessionId);
           const quiescence = await this.adapter.awaitQuiescence(sessionId, this.quiescenceTimeoutMs);
           if (quiescence !== 'quiescent') {
+            // 无法确认静止则 RECOVERY_REQUIRED 但保留取消意图（§5.1 / 设计 §7）：
+            // 意图在下面的 consume 之前保持未消费，恢复流程才看得见这次取消，
+            // 否则恢复之后会把一个用户已经取消的 run 继续跑下去。
             this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
               blockedReason: 'stop_quiescence_unconfirmed',
               pauseReason: null
@@ -318,6 +345,9 @@ export class RunController {
           }
         }
 
+        // 消费放在静止确认之后：等待期间未消费的意图无害（引擎串行执行，无人读它），
+        // 而上面那条恢复早退必须让意图原样留存。
+        this.intents.consume(pending.intentId);
         this.store.updateRunState(this.runId, 'CANCELLED', { pauseReason: null, blockedReason: null });
         this.releaseWorkspaceLease(run);
         this.events.record({ runId: this.runId, type: 'run_cancelled', payload: { intentId: pending.intentId } });
@@ -476,7 +506,7 @@ export class RunController {
       return { kind: 'blocked', reason: `quiescence_${quiescence}` };
     }
 
-    const raw = parseUnitResult(this.adapter.getSessionOutput(sessionId));
+    const raw = await this.settleUnitResult(sessionId, task.taskId);
     const result = raw && raw.taskId === task.taskId ? normalizeUnitResult(raw) : null;
     const nextUnitCount = run.currentSessionUnitCount + 1;
 
@@ -538,6 +568,26 @@ export class RunController {
     return { kind: 'unit_executed', taskId: task.taskId, status };
   }
 
+  /**
+   * 有界地等待本单元的结果块出现。
+   * 静止判定只说明会话此刻没有在跑：适配器可能在上一轮遗留的 idle 上立即返回，
+   * 而本次提示的输出仍在管道里。直接判定"没有结果"会把一次正常完成误记成失败，
+   * 并把它计入无进展计数，因此在截止时间内反复重读会话输出。
+   */
+  private async settleUnitResult(sessionId: string, taskId: string): Promise<UnitResult | null> {
+    const deadline = this.clock() + this.settleTimeoutMs;
+    for (;;) {
+      const parsed = parseUnitResult(this.adapter.getSessionOutput(sessionId));
+      if (parsed && parsed.taskId === taskId) {
+        return parsed;
+      }
+      if (this.clock() >= deadline) {
+        return parsed;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   // ─── 交接八步 ───
 
   private async performHandoff(task: TaskItem, run: RunRecord): Promise<RunTickOutcome> {
@@ -595,6 +645,7 @@ export class RunController {
     const oldQuiescence = await this.adapter.awaitQuiescence(fromSessionId, this.quiescenceTimeoutMs);
     if (oldQuiescence !== 'quiescent') {
       this.stateMachine.markRecoveryRequired();
+      this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: `old_session_quiescence_${oldQuiescence}`
       });
@@ -674,6 +725,7 @@ export class RunController {
     const newQuiescence = await this.adapter.awaitQuiescence(toSessionId, this.quiescenceTimeoutMs);
     if (newQuiescence !== 'quiescent') {
       this.stateMachine.markRecoveryRequired();
+      this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: `new_session_quiescence_${newQuiescence}`
       });
@@ -690,6 +742,7 @@ export class RunController {
     const ack = coordinator.parseAckFromOutput(this.adapter.getSessionOutput(toSessionId));
     if (!ack) {
       this.stateMachine.markRecoveryRequired();
+      this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', { blockedReason: 'ack_not_received' });
       this.events.record({
         runId: this.runId,
@@ -735,9 +788,7 @@ export class RunController {
         this.intents.consume(blocker.intentId);
       }
       // 这次交接没有完成：标记为放弃，使同一 handoff id 的重试不再被误判为重复回调（V13）。
-      this.store.transaction(() => {
-        this.store.updateHandoff(handoffId, { state: 'ABANDONED' });
-      });
+      this.abandonHandoff(handoffId);
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
         pauseReason: `control_intent_${blocker.kind}`
@@ -759,6 +810,7 @@ export class RunController {
     const authResult = transactionResult.authResult;
     if (!authResult.success) {
       this.stateMachine.markRecoveryRequired();
+      this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: authResult.error ?? 'handshake_failed'
       });
@@ -893,6 +945,13 @@ export class RunController {
     return decision.shouldHandoff;
   }
 
+  /** 交接未完成即放弃：同一 handoff id 的重试才不会在步骤 1 被误判为重复回调（V13）。 */
+  private abandonHandoff(handoffId: string): void {
+    this.store.transaction(() => {
+      this.store.updateHandoff(handoffId, { state: 'ABANDONED' });
+    });
+  }
+
   private publishManifestFile(
     handoffId: string,
     manifest: HandoffPackManifest
@@ -901,10 +960,28 @@ export class RunController {
     fs.mkdirSync(dir, { recursive: true });
     const target = path.join(dir, 'manifest.json');
     const staging = `${target}.tmp`;
+    // 同一份字节既写盘又算哈希：记录的哈希必须描述磁盘上的文件，而不是内存里的字符串（§6.3 步骤 3）。
     const json = JSON.stringify(manifest, null, 2);
+    const hash = computeSha256(json);
     fs.writeFileSync(staging, json, 'utf8');
+
+    // 先 fsync 再 rename：改名只保证原子性，落盘顺序要显式要求，否则断电后可能得到空快照。
+    // 用 'r+' 打开是因为 Windows 上对只读句柄调用 fsync 会 EPERM。
+    const fd = fs.openSync(staging, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(staging, target);
-    return { filePath: target, hash: computeSha256(json) };
+
+    // 发布后回读校验：数据库绝不指向一个无法验证的快照。
+    const published = fs.readFileSync(target, 'utf8');
+    if (computeSha256(published) !== hash) {
+      throw new Error(`RunController: published manifest for handoff ${handoffId} failed hash verification`);
+    }
+
+    return { filePath: target, hash };
   }
 
   private persistTaskSnapshot(): void {

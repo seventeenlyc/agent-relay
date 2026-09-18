@@ -10,6 +10,7 @@ import { RunController, type StartRunConfig } from '../../packages/controller/sr
 import { RecordingNotifier } from '../../packages/controller/src/run/notifier.ts';
 import { ControlIntentLog } from '../../packages/controller/src/run/intent.ts';
 import { normalizeWorkspaceKey } from '../../packages/controller/src/workspace/key.ts';
+import { computeSha256 } from '../../packages/protocol/src/index.ts';
 import { WorkspaceLeaseManager } from '../../packages/controller/src/handoff/lease.ts';
 import { HandoffStateMachine } from '../../packages/controller/src/handoff/state-machine.ts';
 import { TwoPhaseHandshakeCoordinator } from '../../packages/adapters/claude/src/handshake.ts';
@@ -685,5 +686,147 @@ test('engine: a rebuilt controller whose session is gone enters recovery without
   assert.strictEqual(restartedStore.listChain('run-engine-1').length, 1, 'no successor link may be appended');
 
   restartedDb.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a unit result that arrives after the quiescence signal is still recorded (V19)', async () => {
+  const adapter = new ScriptedAdapter({
+    outputWithheldPolls: { 'run-engine-1-s1': 3 }
+  });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+
+  controller.startRun(config);
+  const outcome = await controller.tick();
+
+  assert.strictEqual(outcome.kind, 'unit_executed', 'a late result must not be mistaken for a failure');
+  assert.strictEqual((outcome as { status: string }).status, 'completed');
+
+  const tasks = JSON.parse(store.getLatestTaskSnapshot('run-engine-1')!.snapshotJson) as Array<{
+    taskId: string;
+    status: string;
+    testEvidenceHash?: string;
+  }>;
+  assert.strictEqual(tasks[0].status, 'completed');
+  assert.strictEqual(tasks[0].testEvidenceHash, 'evidence-u1');
+  assert.strictEqual(
+    store.listEvents('run-engine-1').filter((e) => e.type === 'unit_failed').length,
+    0,
+    'a late result must not count toward the no-progress detector'
+  );
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: an unconfirmed stop keeps the cancel intent for recovery (V19)', async () => {
+  const overrides: Record<string, 'quiescent' | 'timeout' | 'error'> = {};
+  const adapter = new ScriptedAdapter({ quiescenceOverrides: overrides });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+
+  controller.startRun(config);
+  await controller.tick();
+  overrides['run-engine-1-s1'] = 'timeout';
+
+  const intents = new ControlIntentLog(store);
+  intents.append('run-engine-1', 'stop_now');
+
+  const outcome = await controller.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /stop_quiescence_unconfirmed/);
+
+  assert.strictEqual(store.getRun('run-engine-1')?.state, 'RECOVERY_REQUIRED');
+  const pending = store.listPendingIntents('run-engine-1');
+  assert.strictEqual(pending.length, 1, 'the cancel intent must survive an unconfirmed stop');
+  assert.strictEqual(pending[0].kind, 'stop_now');
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a run found mid-handoff after a restart enters recovery without acting (V14)', async () => {
+  const { db, store, controller, config, dataDir } = setup();
+  controller.startRun(config);
+  await controller.tick();
+  // 模拟控制器在交接中途死亡：持久状态停在 DRAINING
+  store.updateRunState('run-engine-1', 'DRAINING');
+  db.close();
+
+  const restartedDb = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
+  const restartedStore = new RunStore(restartedDb);
+  const restartedAdapter = new ScriptedAdapter();
+  const restarted = new RunController({
+    store: restartedStore,
+    dataDir,
+    adapter: restartedAdapter,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: (deps) =>
+      new TwoPhaseHandshakeCoordinator(
+        deps.stateMachine as HandoffStateMachine,
+        deps.leaseManager as unknown as WorkspaceLeaseManager,
+        deps.workspaceKey
+      )
+  });
+  restarted.rehydrate('run-engine-1');
+
+  const outcome = await restarted.tick();
+  assert.strictEqual(outcome.kind, 'recovery_required');
+  assert.match((outcome as { reason: string }).reason, /run_found_mid_handoff:DRAINING/);
+  assert.strictEqual(restartedStore.getRun('run-engine-1')?.state, 'RECOVERY_REQUIRED');
+  assert.strictEqual(restartedAdapter.created.length, 0, 'no worker may be spawned for a mid-handoff run');
+  assert.strictEqual(restartedAdapter.submitted.length, 0);
+
+  restartedDb.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: a handoff abandoned by a failed quiescence check is retried under the same id (V13)', async () => {
+  const overrides: Record<string, 'quiescent' | 'timeout' | 'error'> = {};
+  const adapter = new ScriptedAdapter({ quiescenceOverrides: overrides });
+  const { db, store, controller, config, dataDir } = setup({ adapter });
+
+  controller.startRun(config);
+  await controller.tick(); // unit 1 in s1
+  overrides['run-engine-1-s1'] = 'timeout';
+
+  assert.strictEqual((await controller.tick()).kind, 'recovery_required');
+  assert.strictEqual(
+    store.getHandoff('h-run-engine-1-1')?.state,
+    'ABANDONED',
+    'a handoff that did not complete must be marked abandoned'
+  );
+  assert.strictEqual(store.getRun('run-engine-1')?.handoffCount, 0, 'a failed handoff must not advance the count');
+
+  // 模拟 P3-01 的恢复：静止确认后回到 RUNNING，同一 handoff id 的重试必须能继续，
+  // 而不是被步骤 1 的重复回调判定误伤成 BLOCKED duplicate_handoff_id。
+  overrides['run-engine-1-s1'] = 'quiescent';
+  store.updateRunState('run-engine-1', 'RUNNING');
+  const retry = await controller.tick();
+
+  assert.strictEqual(retry.kind, 'handoff_performed', 'the retry must not be misdiagnosed as a duplicate callback');
+  assert.strictEqual((retry as { handoffId: string }).handoffId, 'h-run-engine-1-1');
+  assert.strictEqual(store.getHandoff('h-run-engine-1-1')?.state, 'COMPLETED');
+  assert.strictEqual(store.getRun('run-engine-1')?.handoffCount, 1);
+
+  db.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('engine: the recorded manifest hash verifies the published file bytes (V16)', async () => {
+  const { db, store, controller, config, dataDir } = setup();
+  controller.startRun(config);
+  await controller.tick(); // unit 1
+  await controller.tick(); // handoff
+
+  const handoff = store.getHandoff('h-run-engine-1-1');
+  assert.strictEqual(handoff?.state, 'COMPLETED');
+  const published = fs.readFileSync(handoff!.manifestPath!, 'utf8');
+  assert.strictEqual(
+    computeSha256(published),
+    handoff!.manifestHash,
+    'the hash referenced by the database must describe the bytes on disk'
+  );
+
+  db.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
