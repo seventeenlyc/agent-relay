@@ -23,15 +23,16 @@ test('scenarios: S01~S03 - 3-round automated DSH relay with model preservation a
     }
   });
 
-  const lease = new WorkspaceLeaseManager();
-  const sentinel = new WorkspaceSentinel(process.cwd());
-  const packager = new HandoffPackager();
-  const ledger = new InputLedger();
-  ledger.appendUserMessage('Build high-performance deep learning pipeline with DSH runtime');
+  try {
+    const lease = new WorkspaceLeaseManager();
+    const sentinel = new WorkspaceSentinel(process.cwd());
+    const packager = new HandoffPackager();
+    const ledger = new InputLedger();
+    ledger.appendUserMessage('Build high-performance deep learning pipeline with DSH runtime');
 
-  const graph = new TaskGraph();
-  graph.addTask({ taskId: 'dsh-t1', requirementId: 'req-dsh-1', title: 'Unit 1: Data Ingestion & Tokenizer' });
-  graph.addTask({ taskId: 'dsh-t2', requirementId: 'req-dsh-1', title: 'Unit 2: Transformer Encoder Layer' });
+    const graph = new TaskGraph();
+    graph.addTask({ taskId: 'dsh-t1', requirementId: 'req-dsh-1', title: 'Unit 1: Data Ingestion & Tokenizer' });
+    graph.addTask({ taskId: 'dsh-t2', requirementId: 'req-dsh-1', title: 'Unit 2: Transformer Encoder Layer' });
   graph.addTask({ taskId: 'dsh-t3', requirementId: 'req-dsh-1', title: 'Unit 3: Autoregressive Decoder & Loss' });
 
   const runId = 'dsh-relay-run-001';
@@ -291,10 +292,11 @@ test('scenarios: S01~S03 - 3-round automated DSH relay with model preservation a
 
   // Verify final lease is owned by Worker C at epoch 3
   const finalLease = lease.getLease(workspaceKey);
-  assert.strictEqual(finalLease?.currentOwner, workerC_Id);
-  assert.strictEqual(finalLease?.epoch, 3);
-
-  await adapter.shutdown();
+    assert.strictEqual(finalLease?.currentOwner, workerC_Id);
+    assert.strictEqual(finalLease?.epoch, 3);
+  } finally {
+    await adapter.shutdown();
+  }
 });
 
 test('scenarios: S04 - Quiescence detection and dedicated worker shutdown / interruptOwned cancellation handling', async () => {
