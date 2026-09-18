@@ -170,17 +170,34 @@ test('tasks: restoreFrom preserves status, evidence and completedAt across a reb
   assert.strictEqual(restored.getTask('u3')?.status, 'pending');
   assert.deepStrictEqual(restored.getTask('u2')?.dependencies, ['u1']);
 
-  // A completed task without evidence must be rejected
+  // A completed task without evidence must be rejected. The offending item is LAST and two
+  // valid items precede it, so an implementation that commits task-by-task leaves records
+  // behind and fails the untouched-graph assertion instead of passing it.
+  const missingEvidence = new TaskGraph();
   assert.throws(
-    () => new TaskGraph().restoreFrom([{ ...snapshot[0], status: 'completed', testEvidenceHash: undefined }]),
+    () =>
+      missingEvidence.restoreFrom([
+        snapshot[0],
+        snapshot[1],
+        { ...snapshot[0], taskId: 'u-bad', status: 'completed', testEvidenceHash: undefined }
+      ]),
     /completed status requires testEvidenceHash|evidence/i
   );
+  assert.strictEqual(missingEvidence.getAllTasks().length, 0, 'a rejected restore must leave the graph untouched');
 
-  // A dependency on a task that does not exist must be rejected
+  // A dependency on a task that does not exist must be rejected, again with the offending
+  // item last so the valid items staged before it must not survive the failure.
+  const unknownDependency = new TaskGraph();
   assert.throws(
-    () => new TaskGraph().restoreFrom([{ ...snapshot[2], dependencies: ['ghost'] }]),
+    () =>
+      unknownDependency.restoreFrom([
+        snapshot[0],
+        snapshot[1],
+        { ...snapshot[2], dependencies: ['ghost'] }
+      ]),
     /unknown dependency/i
   );
+  assert.strictEqual(unknownDependency.getAllTasks().length, 0, 'a rejected restore must leave the graph untouched');
 
   // Restoring twice must not duplicate tasks
   restored.restoreFrom(snapshot);

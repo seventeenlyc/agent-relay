@@ -103,8 +103,11 @@ test('ledger: restoreFrom reproduces the exact head hash and rejects tampered re
   assert.strictEqual(restored.getHumanInputs().length, 2);
   assert.strictEqual(restored.getAllRecords().length, 3);
 
-  // Tampered content must be rejected outright
-  const tampered = snapshot.map((r) => ({ ...r, rawContent: `${r.rawContent} (edited)` }));
+  // Tampered content must be rejected outright. Only the LAST record is corrupted, so an
+  // implementation that commits record-by-record fails this assertion instead of passing it.
+  const tampered = snapshot.map((r, index) =>
+    index === snapshot.length - 1 ? { ...r, rawContent: `${r.rawContent} (edited)` } : { ...r }
+  );
   const victim = new InputLedger();
   assert.throws(() => victim.restoreFrom(tampered), /hash mismatch/);
   assert.strictEqual(victim.getAllRecords().length, 0, 'a rejected restore must leave the ledger untouched');
@@ -113,4 +116,41 @@ test('ledger: restoreFrom reproduces the exact head hash and rejects tampered re
   restored.restoreFrom(snapshot);
   assert.strictEqual(restored.getAllRecords().length, 3);
   assert.strictEqual(restored.getHeadHash(), expectedHead);
+});
+
+test('ledger: restoreFrom keeps fabricated past timestamps instead of regenerating them', () => {
+  const source = new InputLedger();
+  source.appendUserMessage('Build the pipeline with a read-only handoff');
+  source.appendUserMessage('Also do not change the public API', source.getAllRecords()[0].inputId);
+  source.appendSystemHandoff('generated handoff material must not become human authority');
+
+  // Fixed 2023 literals: Date.now() can never equal them again, so an implementation that
+  // regenerates timestamps fails this test deterministically rather than only when the
+  // clock happens to tick between the append and the restore. sha256Hash stays valid
+  // because computeSha256 hashes the content only, so validateInputRecord still passes.
+  const fabricatedTimestamps = [1685000000000, 1685000000001, 1685000000002];
+  const fabricated = source.getAllRecords().map((record, index) => ({
+    ...record,
+    timestamp: fabricatedTimestamps[index]
+  }));
+
+  const restored = new InputLedger();
+  restored.restoreFrom(fabricated);
+
+  assert.deepStrictEqual(
+    restored.getAllRecords().map((r) => r.timestamp),
+    fabricatedTimestamps,
+    'timestamps must be restored verbatim, including values far in the past'
+  );
+  assert.deepStrictEqual(
+    restored.getAllRecords().map((r) => r.inputId),
+    fabricated.map((r) => r.inputId),
+    'input ids must not be regenerated'
+  );
+
+  // getHeadHash() is a pure function of the restored records, so a second restore round trip
+  // must reproduce it exactly — the cross-restart guarantee every handoff manifest relies on.
+  const roundTripped = new InputLedger();
+  roundTripped.restoreFrom(restored.getAllRecords());
+  assert.strictEqual(roundTripped.getHeadHash(), restored.getHeadHash());
 });
