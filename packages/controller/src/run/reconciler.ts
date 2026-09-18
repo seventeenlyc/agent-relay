@@ -416,6 +416,23 @@ export class RunReconciler {
             reason: 'execution_authorization_failed'
           };
         }
+      } else {
+        this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+          blockedReason: 'execution_authorization_failed'
+        });
+        if (this.options.events) {
+          this.options.events.record({
+            runId,
+            type: 'recovery_required',
+            payload: { reason: 'execution_authorization_failed', targetSessionId }
+          });
+        }
+        return {
+          recoveredState: 'RECOVERY_REQUIRED',
+          healedActions,
+          requiresManualIntervention: true,
+          reason: 'execution_authorization_failed'
+        };
       }
     }
 
@@ -444,11 +461,16 @@ export class RunReconciler {
         };
       }
 
-      await this.options.adapter.interruptOwned(fromSessionId);
-      const q = await this.options.adapter.awaitQuiescence(
-        fromSessionId,
-        this.options.quiescenceTimeoutMs ?? 5000
-      );
+      let q: string | undefined;
+      try {
+        await this.options.adapter.interruptOwned(fromSessionId);
+        q = await this.options.adapter.awaitQuiescence(
+          fromSessionId,
+          this.options.quiescenceTimeoutMs ?? 5000
+        );
+      } catch {
+        q = 'error';
+      }
 
       if (q !== 'quiescent') {
         this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
@@ -495,32 +517,7 @@ export class RunReconciler {
   }
 
   private findAuthorizedHandoff(runId: string): HandoffRecord | undefined {
-    const db = (this.options.store as any).db;
-    if (db) {
-      const row = db
-        .prepare(
-          `SELECT * FROM handoffs
-             WHERE run_id = ?
-               AND state = 'AUTHORIZED'
-             ORDER BY created_at DESC, rowid DESC LIMIT 1`
-        )
-        .get(runId) as Record<string, unknown> | undefined;
-      if (row) {
-        return {
-          handoffId: row.handoff_id as string,
-          runId: row.run_id as string,
-          epoch: row.epoch as number,
-          sourceSessionId: row.source_session_id as string,
-          targetSessionId: row.target_session_id as string | undefined,
-          state: row.state as string,
-          manifestPath: row.manifest_path as string | undefined,
-          manifestHash: row.manifest_hash as string | undefined,
-          createdAt: row.created_at as number,
-          updatedAt: row.updated_at as number
-        };
-      }
-    }
-    return undefined;
+    return this.findHandoffInState(runId, 'AUTHORIZED');
   }
 
   private findHandoffInState(runId: string, state: string): HandoffRecord | undefined {
