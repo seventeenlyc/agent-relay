@@ -19,6 +19,7 @@ export interface MockSession {
 
 export class MockAdapter implements AgentRelayAdapter {
   public sessions: Map<string, MockSession> = new Map();
+  public readonly output: Map<string, string[]> = new Map();
 
   public capabilities(): SessionCapabilities {
     return {
@@ -49,6 +50,7 @@ export class MockAdapter implements AgentRelayAdapter {
       executionAuthorized: !config.readOnly
     };
     this.sessions.set(sid, session);
+    this.output.set(sid, []);
     return {
       sessionId: sid,
       active: true,
@@ -70,11 +72,18 @@ export class MockAdapter implements AgentRelayAdapter {
     };
   }
 
-  public submit(sessionId: string, _messageId: string, _content: string, _epoch?: number): void {
+  public submit(sessionId: string, _messageId: string, content: string, _epoch?: number): void {
     const sess = this.sessions.get(sessionId);
     if (!sess || !sess.active) {
       throw new Error(`Cannot submit to inactive or nonexistent session: ${sessionId}`);
     }
+    const chunks = this.output.get(sessionId) ?? [];
+    chunks.push(content);
+    this.output.set(sessionId, chunks);
+  }
+
+  public getSessionOutput(sessionId: string): string {
+    return (this.output.get(sessionId) ?? []).join('\n');
   }
 
   public requestDrain(sessionId: string, _handoffId: string): boolean {

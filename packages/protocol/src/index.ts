@@ -4,4 +4,5 @@ export * from './tasks.ts';
 export * from './handoff.ts';
 export * from './events.ts';
 export * from './adapter.ts';
+export * from './coordinator.ts';
 

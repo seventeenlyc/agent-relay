@@ -2,6 +2,7 @@ import type { HandoffPackManifest, HandoffAckPacket } from '../../../protocol/sr
 import type { HandoffStateMachine } from '../../../controller/src/handoff/state-machine.ts';
 import type { WorkspaceLeaseManager } from '../../../controller/src/handoff/lease.ts';
 import type { DshAdapter } from './dsh-adapter.ts';
+import type { HandshakeCoordinator } from '../../../protocol/src/coordinator.ts';
 
 export interface DshHandshakeCoordinatorOptions {
   adapter?: DshAdapter;
@@ -17,7 +18,7 @@ export interface HandshakeResult {
   error?: string;
 }
 
-export class DshHandshakeCoordinator {
+export class DshHandshakeCoordinator implements HandshakeCoordinator {
   private readonly adapter?: DshAdapter;
   private readonly leaseManager: WorkspaceLeaseManager;
   private readonly stateMachine: HandoffStateMachine;

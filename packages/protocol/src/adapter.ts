@@ -45,4 +45,6 @@ export interface AgentRelayAdapter {
   awaitQuiescence(sessionId: string, timeoutMs?: number): Promise<'quiescent' | 'timeout' | 'error'>;
   authorizeExecution(sessionId: string, epoch: number, executionToken: string): Promise<boolean> | boolean;
   interruptOwned(sessionId: string): Promise<boolean> | boolean;
+  /** 会话累计的可读输出；交接 ACK 与单元结果都从这里解析。未知会话返回空字符串。 */
+  getSessionOutput(sessionId: string): string;
 }

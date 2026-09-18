@@ -32,6 +32,10 @@ test('adapter-spi: MockAdapter implements AgentRelayAdapter interface', async ()
 
   await adapter.submit('sess-test-1', 'msg-1', 'Hello world');
 
+  assert.strictEqual(typeof adapter.getSessionOutput('sess-test-1'), 'string');
+  assert.match(adapter.getSessionOutput('sess-test-1'), /Hello world/);
+  assert.strictEqual(adapter.getSessionOutput('nonexistent-session'), '');
+
   const drainSuccess = await adapter.requestDrain('sess-test-1', 'handoff-1');
   assert.strictEqual(drainSuccess, true);
 
@@ -73,6 +77,8 @@ test('adapter-spi: ClaudeAdapter implements AgentRelayAdapter interface', async 
   assert.strictEqual(inspect.active, true);
   assert.strictEqual(inspect.effectiveModel?.model, 'claude-3-7-sonnet');
   assert.strictEqual(inspect.effectiveModel?.effort, 'high');
+
+  assert.strictEqual(typeof adapter.getSessionOutput('sess-spi-claude'), 'string');
 
   const inspected = await adapter.inspectSession('sess-spi-claude');
   assert.strictEqual(inspected?.sessionId, 'sess-spi-claude');
@@ -119,6 +125,8 @@ test('adapter-spi: CodexAdapter implements AgentRelayAdapter interface', async (
   assert.strictEqual(inspect.active, true);
   assert.strictEqual(inspect.effectiveModel?.model, 'gpt-5.6-luna');
   assert.strictEqual(inspect.effectiveModel?.effort, 'xhigh');
+
+  assert.strictEqual(typeof adapter.getSessionOutput('sess-spi-codex'), 'string');
 
   const inspected = await adapter.inspectSession('sess-spi-codex');
   assert.strictEqual(inspected?.sessionId, 'sess-spi-codex');
@@ -172,6 +180,8 @@ test('adapter-spi: DshAdapter implements AgentRelayAdapter interface', async () 
   assert.strictEqual(inspect.effectiveModel?.provider, 'deepseek-official');
   assert.strictEqual(inspect.effectiveModel?.model, 'deepseek-reasoner');
   assert.strictEqual(inspect.effectiveModel?.effort, 'high');
+
+  assert.strictEqual(typeof adapter.getSessionOutput('sess-spi-dsh'), 'string');
 
   const inspected = await adapter.inspectSession('sess-spi-dsh');
   assert.strictEqual(inspected?.sessionId, 'sess-spi-dsh');

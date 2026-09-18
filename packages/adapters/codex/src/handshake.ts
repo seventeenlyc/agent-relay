@@ -1,6 +1,7 @@
 import type { HandoffPackManifest, HandoffAckPacket } from '../../../protocol/src/types.ts';
 import type { HandoffStateMachine } from '../../../controller/src/handoff/state-machine.ts';
 import type { WorkspaceLeaseManager } from '../../../controller/src/handoff/lease.ts';
+import type { HandshakeCoordinator } from '../../../protocol/src/coordinator.ts';
 
 export interface HandshakeResult {
   success: boolean;
@@ -9,7 +10,7 @@ export interface HandshakeResult {
   error?: string;
 }
 
-export class CodexHandshakeCoordinator {
+export class CodexHandshakeCoordinator implements HandshakeCoordinator {
   private readonly stateMachine: HandoffStateMachine;
   private readonly leaseManager: WorkspaceLeaseManager;
   private readonly workspaceKey: string;
@@ -32,6 +33,11 @@ export class CodexHandshakeCoordinator {
       'Output your structured HandoffAckPacket verifying verifiedInputHeadHash, verifiedTaskSnapshotHash, and verifiedWorkspaceHash.',
       'Once verified and approved, you will receive your EXECUTION_TOKEN to begin writing.'
     ].join('\n');
+  }
+
+  /** 契约别名：引擎只依赖规范方法名，方言差异由各适配器自行决定。 */
+  public buildPreparationPrompt(manifest: HandoffPackManifest): string {
+    return this.generatePreparationPrompt(manifest);
   }
 
   public startNewSession(newSessionId: string): void {
@@ -189,5 +195,9 @@ export class CodexHandshakeCoordinator {
     }
 
     return undefined;
+  }
+
+  public parseAckFromOutput(text: string): HandoffAckPacket | null {
+    return this.extractAckFromText(text) ?? null;
   }
 }
