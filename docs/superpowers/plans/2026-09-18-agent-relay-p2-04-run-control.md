@@ -2763,7 +2763,9 @@ test('state-machine: new transitions reject invalid source states', () => {
 
   sm.requestHandoff('unit_completed');
   assert.throws(() => sm.beginStarting(), /Cannot begin starting session in state DRAINING/);
-  assert.throws(() => sm.markRecoveryRequired(), /Cannot mark recovery required in state DRAINING/);
+  // 无法确认旧写入静止时 DRAINING 必须能进入恢复态（03-技术设计.md §7、§6.3 第 2 步；Task 8 交接第 2 步依赖它）
+  sm.markRecoveryRequired();
+  assert.strictEqual(sm.getState(), 'RECOVERY_REQUIRED');
 });
 ```
 
