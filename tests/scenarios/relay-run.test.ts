@@ -17,6 +17,7 @@ import { DurableLeaseManager } from '../../packages/controller/src/handoff/durab
 import { normalizeWorkspaceKey } from '../../packages/controller/src/workspace/key.ts';
 import { TwoPhaseHandshakeCoordinator } from '../../packages/adapters/claude/src/handshake.ts';
 import { DshAdapter } from '../../packages/adapters/dsh/src/dsh-adapter.ts';
+import { DshProcessRunner } from '../../packages/adapters/dsh/src/runner.ts';
 import { DshHandshakeCoordinator } from '../../packages/adapters/dsh/src/handshake.ts';
 import { runCli, type CliIo } from '../../packages/cli/src/cli.ts';
 import { ScriptedAdapter } from '../helpers/scripted-adapter.ts';
@@ -207,7 +208,9 @@ test('scenarios: V21 - a CLI stop is honoured and never treated as an abnormal r
   const submitCount = adapter.submitted.length;
   db.close();
 
-  // A restart must read the persisted cancel intent and stay put
+  // 重启后拒绝恢复，靠的是权威库里 run 已处于终态 CANCELLED（引擎的终态早退，
+  // 见 engine.ts 的 run.state === 'CANCELLED' 分支），而不是任何意图存活下来——
+  // 本用例随后断言待处理意图为 0，正是因为这里不需要它。
   const restartedDb = new RelayDatabase({ dbPath });
   const restartedStore = new RunStore(restartedDb);
   const restartedAdapter = new ScriptedAdapter();
@@ -239,7 +242,7 @@ test('scenarios: V21 - a CLI stop is honoured and never treated as an abnormal r
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test('scenarios: V13 - duplicate handoffs are deduplicated by handoffId', async () => {
+test('scenarios: V13 - a duplicate handoff callback is refused instead of driving a second session', async () => {
   const dataDir = tempDir('agent-relay-v13-');
   const db = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
   const store = new RunStore(db);
@@ -275,6 +278,52 @@ test('scenarios: V13 - duplicate handoffs are deduplicated by handoffId', async 
   assert.strictEqual(insert(), false, 'a replayed handoff must not create a second record');
 
   db.close();
+
+  // 引擎视角：预置一条同 id 且未曾放弃的交接行，模拟重复回调
+  const secondDir = tempDir('agent-relay-v13b-');
+  const db2 = new RelayDatabase({ dbPath: path.join(secondDir, 'relay.db') });
+  const store2 = new RunStore(db2);
+  const adapter2 = new ScriptedAdapter();
+  const controller2 = new RunController({
+    store: store2,
+    dataDir: secondDir,
+    adapter: adapter2,
+    adapterName: 'claude',
+    notifier: new RecordingNotifier(),
+    createCoordinator: claudeCoordinator()
+  });
+  controller2.startRun({
+    runId: 'relay-run-v13b',
+    goal: 'Refuse a duplicate handoff callback',
+    workspacePath: secondDir,
+    tasks: FOUR_UNITS,
+    model: { provider: 'anthropic', model: 'claude-3-7-sonnet' },
+    initialUserMessage: 'Go.'
+  });
+  assert.strictEqual((await controller2.tick()).kind, 'unit_executed');
+
+  // 下一次交接会计算出同一个 handoff id；这行不是 ABANDONED，因此是真正的重复
+  assert.strictEqual(
+    store2.insertHandoff({
+      handoffId: 'h-relay-run-v13b-1',
+      runId: 'relay-run-v13b',
+      epoch: 1,
+      sourceSessionId: 'relay-run-v13b-s1',
+      state: 'REQUESTED'
+    }),
+    true
+  );
+
+  const outcome = await controller2.tick();
+  assert.strictEqual(outcome.kind, 'blocked');
+  assert.match((outcome as { reason: string }).reason, /duplicate_handoff_id/);
+  assert.strictEqual(store2.getRun('relay-run-v13b')?.state, 'BLOCKED');
+  assert.strictEqual(store2.listChain('relay-run-v13b').length, 1, 'no successor session may be created');
+  assert.strictEqual(store2.getLeaseRow(store2.getRun('relay-run-v13b')!.workspaceKey)?.epoch, 1);
+  assert.strictEqual(adapter2.created.length, 1, 'the duplicate must not spawn a second worker');
+
+  db2.close();
+  fs.rmSync(secondDir, { recursive: true, force: true });
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -318,6 +367,28 @@ test('scenarios: V34 - case and link variants of one directory share a single ru
 
   assert.strictEqual(second.runId, first.runId, 'both paths must resolve to the same controlled run');
   assert.strictEqual(store.listRuns().length, 1);
+
+  if (process.platform === 'win32') {
+    // 同一目录的不同大小写写法必须落到同一个 run，否则重复启用会开出一个平行 run
+    assert.strictEqual(
+      normalizeWorkspaceKey(workspaceDir.toUpperCase()),
+      normalizeWorkspaceKey(workspaceDir)
+    );
+    const upper = controller.startRun({
+      ...base,
+      runId: 'relay-run-v34-upper',
+      workspacePath: workspaceDir.toUpperCase()
+    });
+    assert.strictEqual(upper.runId, first.runId, 'a case-variant path must not open a second run');
+    assert.strictEqual(store.listRuns().length, 1);
+
+    // 折叠大小写只在尾部「尚未创建」时才可观测：realpath 已把存在的路径还原成磁盘真实
+    // 大小写，所以上面那条断言删掉折叠也照样通过。工作区允许先启用、后创建，这一半必须钉住。
+    assert.strictEqual(
+      normalizeWorkspaceKey(path.join(dataDir, 'pending-workspace').toUpperCase()),
+      normalizeWorkspaceKey(path.join(dataDir, 'pending-workspace'))
+    );
+  }
 
   // An independent worktree never collides
   const sibling = path.join(dataDir, 'sibling-worktree');
@@ -398,11 +469,22 @@ test('scenarios: real DSH adapter - one handoff across two dedicated worker proc
 
   const db = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
   const store = new RunStore(db);
+  const runners = new Map<string, DshProcessRunner>();
   const adapter = new DshAdapter({
     runnerOptions: {
       binPath: process.execPath,
       extraArgsPrefix: [MOCK_DSH_SERVER],
       startupGracePeriodMs: 50
+    },
+    runnerFactory: (sessionId, sessionConfig) => {
+      const runner = new DshProcessRunner({
+        binPath: process.execPath,
+        extraArgsPrefix: [MOCK_DSH_SERVER],
+        startupGracePeriodMs: 50,
+        cwd: sessionConfig.cwd
+      });
+      runners.set(sessionId, runner);
+      return runner;
     }
   });
   const notifier = new RecordingNotifier();
@@ -447,6 +529,15 @@ test('scenarios: real DSH adapter - one handoff across two dedicated worker proc
     // The first worker process is gone; the second one is the only live owner
     assert.strictEqual(adapter.inspectSession('relay-run-dsh-s1')?.active, false);
     assert.strictEqual(adapter.inspectSession('relay-run-dsh-s2')?.active, true);
+
+    // 交接后必须证明旧 worker 的**进程**确实已经结束；
+    // inspectSession 的 active 标志是适配器自己写的簿记，进程还活着时它同样是 false。
+    const firstRunner = runners.get('relay-run-dsh-s1');
+    const secondRunner = runners.get('relay-run-dsh-s2');
+    assert.ok(firstRunner, 'the first worker runner must have been captured');
+    assert.ok(secondRunner, 'the second worker runner must have been captured');
+    assert.strictEqual(firstRunner!.isRunningProcess(), false, 'the superseded worker process must be gone');
+    assert.strictEqual(secondRunner!.isRunningProcess(), true, 'the successor worker process must still be alive');
 
     const run = store.getRun('relay-run-dsh')!;
     assert.strictEqual(store.getLeaseRow(run.workspaceKey), undefined, 'the finished run releases the lease');
