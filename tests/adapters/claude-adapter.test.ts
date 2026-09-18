@@ -175,6 +175,7 @@ test('claude-adapter: packages/adapters/claude/src/index.ts exports all componen
   assert.ok(index.ClaudeProcessRunner);
   assert.ok(index.ClaudeHookHandler);
   assert.ok(index.HookDeduplicator);
+  assert.ok(index.TwoPhaseHandshakeCoordinator);
 });
 
 test('claude-adapter: supports submit to active session and awaitQuiescence timeout', async () => {
