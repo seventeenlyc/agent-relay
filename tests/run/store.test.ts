@@ -223,6 +223,20 @@ test('store: WAL makes committed writes visible to a separate process (V22)', ()
   }
 });
 
+test('store: a failed construction releases the database handle', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-leak-'));
+  const dbPath = path.join(dir, 'relay.db');
+  fs.writeFileSync(dbPath, 'this is not a sqlite database', 'utf8');
+
+  assert.throws(() => new RelayDatabase({ dbPath }), /file is not a database/);
+
+  // 构造失败必须释放已打开的句柄，否则 Windows 上该文件会被锁定到进程结束。
+  assert.doesNotThrow(
+    () => fs.rmSync(dir, { recursive: true, force: true }),
+    'the handle must be released even though construction threw'
+  );
+});
+
 test('store: lease table enforces single owner with monotonic epoch CAS', () => {
   const db = new RelayDatabase({ dbPath: ':memory:' });
   const store = new RunStore(db);

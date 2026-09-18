@@ -145,22 +145,38 @@ test('cli: chain lists session links in order', async () => {
 
 test('cli: control actions persist the intent before printing confirmation', async () => {
   const dataDir = tempDir();
+  const dbPath = path.join(dataDir, 'relay.db');
   const { db, store } = seed(dataDir);
   db.close();
 
-  const paused = capture();
-  assert.strictEqual(await runCli(['pause', '--data-dir', dataDir], { io: paused.io }), 0);
-  assert.match(paused.out.join('\n'), /watermark 1/);
+  const out: string[] = [];
+  const err: string[] = [];
+  const pendingAtPrintTime: number[] = [];
+  const io: CliIo = {
+    out: (line) => {
+      // 在打印回调里用独立连接回读：确认输出的那一刻，意图必须已经在库里。
+      // 若只在整个 runCli 返回之后再查，就无法区分"先落库后打印"与"先打印后落库"。
+      const probeDb = new RelayDatabase({ dbPath });
+      pendingAtPrintTime.push(new RunStore(probeDb).listPendingIntents('run-cli-1').length);
+      probeDb.close();
+      out.push(line);
+    },
+    err: (line) => err.push(line)
+  };
 
-  const inspection = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
+  assert.strictEqual(await runCli(['pause', '--data-dir', dataDir], { io }), 0);
+  assert.match(out.join('\n'), /watermark 1/);
+  assert.deepStrictEqual(pendingAtPrintTime, [1], 'the intent must already be durable when the confirmation is printed');
+
+  const inspection = new RelayDatabase({ dbPath });
   const inspectionStore = new RunStore(inspection);
   const pending = inspectionStore.listPendingIntents('run-cli-1');
   assert.strictEqual(pending.length, 1, 'the intent must already be durable when confirmation is printed');
   assert.strictEqual(pending[0].kind, 'pause_next_node');
   assert.strictEqual(pending[0].watermark, 1);
 
-  const stopped = capture();
-  assert.strictEqual(await runCli(['stop', '--data-dir', dataDir], { io: stopped.io }), 0);
+  assert.strictEqual(await runCli(['stop', '--data-dir', dataDir], { io }), 0);
+  assert.deepStrictEqual(pendingAtPrintTime, [1, 2], 'each confirmation must be printed only after its intent is durable');
   assert.strictEqual(inspectionStore.listPendingIntents('run-cli-1').length, 2);
   assert.strictEqual(inspectionStore.getLatestIntentWatermark('run-cli-1'), 2);
 
@@ -173,7 +189,24 @@ test('cli: run selection fails with exit code 2 when no run or several runs exis
   const missing = capture();
   assert.strictEqual(await runCli(['status', '--data-dir', empty], { io: missing.io }), 2);
   assert.match(missing.err.join('\n'), /no run/i);
+  assert.strictEqual(
+    fs.existsSync(path.join(empty, 'relay.db')),
+    false,
+    'a command against an absent store must not create one'
+  );
   fs.rmSync(empty, { recursive: true, force: true });
+
+  // 写命令同样不得创建库：否则「无 run」的失败会留下一个空库，掩盖后续诊断
+  const emptyWrite = tempDir();
+  const missingWrite = capture();
+  assert.strictEqual(await runCli(['pause', '--data-dir', emptyWrite], { io: missingWrite.io }), 2);
+  assert.match(missingWrite.err.join('\n'), /no run/i);
+  assert.strictEqual(
+    fs.existsSync(path.join(emptyWrite, 'relay.db')),
+    false,
+    'a command against an absent store must not create one'
+  );
+  fs.rmSync(emptyWrite, { recursive: true, force: true });
 
   const ambiguous = tempDir();
   const { db } = seed(ambiguous, 'run-cli-1');
@@ -219,6 +252,22 @@ test('cli: unknown commands and bad usage exit with code 1', async () => {
   const missingValue = capture();
   assert.strictEqual(await runCli(['status', '--data-dir', dataDir, '--run'], { io: missingValue.io }), 1);
   assert.match(missingValue.err.join('\n'), /--run requires a value/);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('cli: an unreadable store returns an exit code instead of throwing', async () => {
+  const dataDir = tempDir();
+  fs.writeFileSync(path.join(dataDir, 'relay.db'), 'this is not a sqlite database', 'utf8');
+
+  const { io, out, err } = capture();
+  const code = await runCli(['status', '--data-dir', dataDir], { io });
+
+  assert.strictEqual(typeof code, 'number');
+  assert.strictEqual(code, 1);
+  assert.strictEqual(out.length, 0);
+  assert.match(err.join('\n'), /^error: /m);
+  assert.doesNotMatch(err.join('\n'), /at Object\.|node:internal/);
 
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

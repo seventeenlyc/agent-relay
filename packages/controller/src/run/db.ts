@@ -157,10 +157,16 @@ export class RelayDatabase {
       fs.mkdirSync(path.dirname(options.dbPath), { recursive: true });
     }
     this.handle = new DatabaseSync(options.dbPath);
-    this.handle.exec('PRAGMA journal_mode = WAL');
-    this.handle.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 3000}`);
-    this.handle.exec('PRAGMA foreign_keys = ON');
-    this.migrate();
+    try {
+      this.handle.exec('PRAGMA journal_mode = WAL');
+      this.handle.exec(`PRAGMA busy_timeout = ${options.busyTimeoutMs ?? 3000}`);
+      this.handle.exec('PRAGMA foreign_keys = ON');
+      this.migrate();
+    } catch (err) {
+      // 构造失败也必须释放原生句柄：Windows 上未关闭的句柄会锁住文件
+      try { this.handle.close(); } catch { /* 保留原始错误 */ }
+      throw err;
+    }
   }
 
   public migrate(): void {
