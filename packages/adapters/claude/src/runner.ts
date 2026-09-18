@@ -91,12 +91,15 @@ export class ClaudeProcessRunner {
 
     rlStdout.on('line', (line) => {
       rawLines.push(line);
+      let ev: ClaudeStreamEvent | null = null;
       try {
-        const ev = JSON.parse(line) as ClaudeStreamEvent;
+        ev = JSON.parse(line) as ClaudeStreamEvent;
         events.push(ev);
-        options.onEvent?.(ev);
       } catch {
         // Raw line fallback
+      }
+      if (ev) {
+        options.onEvent?.(ev);
       }
     });
 
@@ -117,7 +120,9 @@ export class ClaudeProcessRunner {
         }) + '\n';
       try {
         proc.stdin.write(payload);
-        proc.stdin.end();
+        if (!options.keepStdinOpen) {
+          proc.stdin.end();
+        }
       } catch {
         // Ignore EPIPE
       }

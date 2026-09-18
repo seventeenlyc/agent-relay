@@ -137,3 +137,77 @@ test('claude-runner: supports resume session flag', async () => {
   assert.strictEqual(result.code, 0);
 });
 
+test('claude-runner: supports sendInput on active process with keepStdinOpen', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH]
+  });
+
+  const capturedEvents: ClaudeStreamEvent[] = [];
+  const sessionId = 'test-uuid-send-input';
+
+  const sessionPromise = runner.runSession({
+    sessionId,
+    runId: 'run-input',
+    keepStdinOpen: true,
+    onEvent: (ev) => {
+      capturedEvents.push(ev);
+    }
+  });
+
+  // Give child process time to initialize and emit system:init
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Send input via runner on active session
+  const sent = runner.sendInput(sessionId, 'PROBE_OK');
+  assert.strictEqual(sent, true);
+
+  const result = await sessionPromise;
+  assert.strictEqual(result.code, 0);
+  assert.strictEqual(result.sessionId, sessionId);
+
+  const assistant = capturedEvents.find((e) => e.type === 'assistant');
+  assert.ok(assistant);
+  assert.strictEqual((assistant as any).message?.content?.[0]?.text, 'PROBE_OK');
+
+  const resEv = capturedEvents.find((e) => e.type === 'result');
+  assert.ok(resEv);
+  assert.strictEqual((resEv as any).result, 'PROBE_OK');
+});
+
+test('claude-runner: supports multi-turn session with initialPrompt and subsequent sendInput', async () => {
+  const runner = new ClaudeProcessRunner({
+    binPath: process.execPath,
+    extraArgsPrefix: [MOCK_CLI_PATH, '--turns', '2']
+  });
+
+  const capturedEvents: ClaudeStreamEvent[] = [];
+  const sessionId = 'test-uuid-multiturn';
+
+  const sessionPromise = runner.runSession({
+    sessionId,
+    runId: 'run-multiturn',
+    initialPrompt: 'PROBE_OK',
+    keepStdinOpen: true,
+    onEvent: (ev) => {
+      capturedEvents.push(ev);
+    }
+  });
+
+  // Wait for turn 1 to be received and processed
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // Send second input on the active process
+  const sent = runner.sendInput(sessionId, 'SECOND_INPUT');
+  assert.strictEqual(sent, true);
+
+  const result = await sessionPromise;
+  assert.strictEqual(result.code, 0);
+
+  const assistantEvents = capturedEvents.filter((e) => e.type === 'assistant');
+  assert.strictEqual(assistantEvents.length, 2);
+  assert.strictEqual((assistantEvents[0] as any).message?.content?.[0]?.text, 'PROBE_OK');
+  assert.strictEqual((assistantEvents[1] as any).message?.content?.[0]?.text, 'SECOND_OK');
+});
+
+

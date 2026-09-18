@@ -7,6 +7,7 @@ let sessionId = 'unknown-session';
 let model = 'gemini-3.8-flash-high';
 let prompt = '';
 let sleepMs = 0;
+let turns = 1;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--session-id' && args[i + 1]) {
@@ -17,6 +18,8 @@ for (let i = 0; i < args.length; i++) {
     model = args[++i];
   } else if (args[i] === '--sleep' && args[i + 1]) {
     sleepMs = parseInt(args[++i], 10);
+  } else if (args[i] === '--turns' && args[i + 1]) {
+    turns = parseInt(args[++i], 10);
   } else if (args[i] === '--stderr-line' && args[i + 1]) {
     process.stderr.write(args[++i] + '\n');
   } else if (args[i] === '--raw-line' && args[i + 1]) {
@@ -47,41 +50,49 @@ async function run() {
 
   // Read stdin if stream-json
   const rl = readline.createInterface({ input: process.stdin });
-  let userText = '';
+  let turnCount = 0;
 
   for await (const line of rl) {
     try {
       const parsed = JSON.parse(line);
       if (parsed.type === 'user' && parsed.message?.content) {
-        userText = parsed.message.content;
-        break;
+        turnCount++;
+        const content = parsed.message.content;
+        const replyText = content.includes('PROBE_OK')
+          ? 'PROBE_OK'
+          : (content.includes('SECOND_INPUT') ? 'SECOND_OK' : 'MOCK_OUTPUT_DEFAULT');
+
+        // 2. assistant
+        emit({
+          type: 'assistant',
+          session_id: sessionId,
+          message: {
+            id: `msg-${turnCount}`,
+            role: 'assistant',
+            content: [{ type: 'text', text: replyText }]
+          }
+        });
+
+        // 3. result
+        emit({
+          type: 'result',
+          subtype: 'success',
+          session_id: sessionId,
+          result: replyText,
+          duration_ms: 50,
+          total_cost_usd: 0.0001,
+          usage: { input_tokens: 100, output_tokens: 10 }
+        });
+
+        if (turnCount >= turns) {
+          break;
+        }
       }
     } catch {}
   }
 
-  const replyText = userText.includes('PROBE_OK') ? 'PROBE_OK' : 'MOCK_OUTPUT_DEFAULT';
-
-  // 2. assistant
-  emit({
-    type: 'assistant',
-    session_id: sessionId,
-    message: {
-      id: 'msg-1',
-      role: 'assistant',
-      content: [{ type: 'text', text: replyText }]
-    }
-  });
-
-  // 3. result
-  emit({
-    type: 'result',
-    subtype: 'success',
-    session_id: sessionId,
-    result: replyText,
-    duration_ms: 50,
-    total_cost_usd: 0.0001,
-    usage: { input_tokens: 100, output_tokens: 10 }
-  });
+  rl.close();
+  process.exit(0);
 }
 
 run().catch((err) => {

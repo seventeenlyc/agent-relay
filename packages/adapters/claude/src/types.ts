@@ -76,6 +76,7 @@ export interface ProcessRunOptions {
   runId: string;
   resume?: boolean;
   initialPrompt?: string;
+  keepStdinOpen?: boolean;
   model?: {
     provider: string;
     model: string;
