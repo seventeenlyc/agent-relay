@@ -484,11 +484,13 @@ export function normalizeWorkspaceKey(workspacePath: string): string;
 
 规则：
 
-1. `fs.realpathSync.native()` 解析符号链接与 Windows junction
+1. 先解析为绝对路径，再由 `fs.realpathSync.native()` 解析符号链接与 Windows junction：解析对象是**最长已存在祖先**，尚未创建的尾段按原顺序接回，因此「目录尚不存在」与「目录已存在」得到同一个 key
 2. Windows 上大小写折叠（`toLowerCase()`）并按 `\` 统一分隔符
 3. 结果绝对路径字符串即为 `workspace_key`
 
 **独立 worktree 有各自不同的 realpath，因此天然不误冲突**；同一物理目录的不同大小写/链接写法解析为同一 key，只保留一个受控写入 owner。
+
+**已知可接受限制（NTFS 逐目录大小写敏感）**：`fsutil file setCaseSensitiveInfo` 可以让某个目录真正区分大小写，`CaseA` 与 `casea` 于是可以是两个并存的独立目录，而规则 2 的大小写折叠会把它们归并为同一个 `workspace_key`。该方向的失败是 fail-closed 的：多个目录共用一个 key 只会让后来的写入者拿不到租约，绝不会让同一物理目录出现两个 owner；Node 没有内建方式读取该目录标志，规范化时无从区分，故按已知限制接受。
 
 ### 7.3 重复启用
 

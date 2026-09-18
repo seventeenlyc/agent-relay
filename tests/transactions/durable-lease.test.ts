@@ -37,6 +37,23 @@ test('durable-lease: CAS enforces owner, epoch and monotonicity (R10, V34)', () 
   db.close();
 });
 
+test('durable-lease: CAS rejects a wrong owner even when the expected epoch matches the live row', () => {
+  const { db, lease } = makeManager();
+  lease.acquireInitialLease('ws-1', 'session-a', 1);
+  lease.compareAndSetOwner('ws-1', 'session-a', 'session-b', 1, 2);
+
+  // 这里 epoch 与在册行完全一致（2），只有 owner 是错的：
+  // 少了 owner 谓词，这条 CAS 会被 epoch 放行，单写入者不变量就破了
+  assert.strictEqual(
+    lease.compareAndSetOwner('ws-1', 'session-impostor', 'session-rogue', 2, 3),
+    false,
+    'a wrong owner must be rejected on its own, not merely via the epoch predicate'
+  );
+  assert.strictEqual(lease.getLease('ws-1')?.currentOwner, 'session-b');
+  assert.strictEqual(lease.getLease('ws-1')?.epoch, 2);
+  db.close();
+});
+
 test('durable-lease: compareAndSetOwner returns false for an unknown workspace', () => {
   const { db, lease } = makeManager();
   assert.strictEqual(lease.compareAndSetOwner('missing', 'a', 'b', 1, 2), false);
