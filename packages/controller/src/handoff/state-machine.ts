@@ -61,7 +61,7 @@ export class HandoffStateMachine {
   }
 
   public startNewSession(newSessionId: string): void {
-    if (this.state !== 'CHECKPOINTED') {
+    if (this.state !== 'CHECKPOINTED' && this.state !== 'STARTING') {
       throw new Error(`Cannot start new session in state ${this.state}`);
     }
     this.state = 'PREPARING';
@@ -92,6 +92,38 @@ export class HandoffStateMachine {
       token: `EXEC_TOKEN_${randomUUID()}`,
       epoch: this.epoch
     };
+  }
+
+  /** 用户继续：PAUSED → CHECKPOINTED，随后必须重新核对才可再次交接。 */
+  public resume(): void {
+    if (this.state !== 'PAUSED') {
+      throw new Error(`Cannot resume in state ${this.state}`);
+    }
+    this.state = 'CHECKPOINTED';
+  }
+
+  /** CHECKPOINTED → STARTING：创建意图已持久化，但创建结果可能仍未知（V14）。 */
+  public beginStarting(): void {
+    if (this.state !== 'CHECKPOINTED') {
+      throw new Error(`Cannot begin starting session in state ${this.state}`);
+    }
+    this.state = 'STARTING';
+  }
+
+  /** 无法确认旧写入静止或创建结果不确定时进入恢复态。 */
+  public markRecoveryRequired(): void {
+    if (this.state !== 'DRAINING' && this.state !== 'STARTING' && this.state !== 'PREPARING') {
+      throw new Error(`Cannot mark recovery required in state ${this.state}`);
+    }
+    this.state = 'RECOVERY_REQUIRED';
+  }
+
+  /** 查明状态后回到 CHECKPOINTED 以便重新封装。 */
+  public resolveRecovery(): void {
+    if (this.state !== 'RECOVERY_REQUIRED') {
+      throw new Error(`Cannot resolve recovery in state ${this.state}`);
+    }
+    this.state = 'CHECKPOINTED';
   }
 
   public pause(): void {

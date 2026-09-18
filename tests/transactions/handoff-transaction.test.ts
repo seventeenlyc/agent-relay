@@ -199,3 +199,51 @@ test('mock-adapter: session spawn, ack generation, and termination', () => {
   adapter.terminateSession('sess-100');
   assert.strictEqual(adapter.sessions.get('sess-100')?.active, false);
 });
+
+test('state-machine: supports the STARTING leg and recovery transitions required by the engine (V14, V20)', () => {
+  const sm = new HandoffStateMachine('run-sm-2', 'session-a', 1);
+  assert.strictEqual(sm.getState(), 'RUNNING');
+
+  sm.requestHandoff('unit_completed');
+  sm.checkpointCompleted('h-ckpt');
+  assert.strictEqual(sm.getState(), 'CHECKPOINTED');
+
+  // STARTING models the window where the create intent is durable but the
+  // create result may still be unknown (V14).
+  sm.beginStarting();
+  assert.strictEqual(sm.getState(), 'STARTING');
+
+  // startNewSession must accept STARTING as well as CHECKPOINTED
+  sm.startNewSession('session-b');
+  assert.strictEqual(sm.getState(), 'PREPARING');
+  assert.strictEqual(sm.getCurrentOwner(), 'session-b');
+
+  // PREPARING -> RECOVERY_REQUIRED when the ACK cannot be reconciled
+  sm.markRecoveryRequired();
+  assert.strictEqual(sm.getState(), 'RECOVERY_REQUIRED');
+
+  // RECOVERY_REQUIRED -> CHECKPOINTED once the state is re-established
+  sm.resolveRecovery();
+  assert.strictEqual(sm.getState(), 'CHECKPOINTED');
+
+  // PAUSED -> CHECKPOINTED on user resume (03-技术设计.md §7)
+  const sm2 = new HandoffStateMachine('run-sm-3', 'session-x', 1);
+  sm2.pause();
+  assert.strictEqual(sm2.getState(), 'PAUSED');
+  sm2.resume();
+  assert.strictEqual(sm2.getState(), 'CHECKPOINTED');
+});
+
+test('state-machine: new transitions reject invalid source states', () => {
+  const sm = new HandoffStateMachine('run-sm-4', 'session-a', 1);
+
+  assert.throws(() => sm.beginStarting(), /Cannot begin starting session in state RUNNING/);
+  assert.throws(() => sm.resolveRecovery(), /Cannot resolve recovery in state RUNNING/);
+  assert.throws(() => sm.resume(), /Cannot resume in state RUNNING/);
+
+  sm.requestHandoff('unit_completed');
+  assert.throws(() => sm.beginStarting(), /Cannot begin starting session in state DRAINING/);
+  // 无法确认旧写入静止时 DRAINING 必须能进入恢复态（03-技术设计.md §7、§6.3 第 2 步；Task 8 交接第 2 步依赖它）
+  sm.markRecoveryRequired();
+  assert.strictEqual(sm.getState(), 'RECOVERY_REQUIRED');
+});

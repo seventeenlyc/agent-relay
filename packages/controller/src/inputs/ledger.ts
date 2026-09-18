@@ -39,6 +39,36 @@ export class InputLedger {
     return record;
   }
 
+  /**
+   * 从持久化记录逐字重建账本（重启恢复用）。
+   * 每条记录都经过 validateInputRecord（含 sha256 完整性校验）；任何一条被篡改即整体拒绝，
+   * 不留下半还原状态。原始 inputId / timestamp / sha256Hash 一律保留，因此 getHeadHash() 可稳定复现。
+   */
+  public restoreFrom(records: InputRecord[]): void {
+    if (records.length === 0) {
+      return;
+    }
+    const staged: InputRecord[] = [];
+    for (const record of records) {
+      const copy: InputRecord = {
+        inputId: record.inputId,
+        source: record.source,
+        timestamp: record.timestamp,
+        rawContent: record.rawContent,
+        sha256Hash: record.sha256Hash,
+        supersedesId: record.supersedesId,
+        metadata: record.metadata
+      };
+      validateInputRecord(copy);
+      Object.freeze(copy);
+      if (this.records.some((existing) => existing.inputId === copy.inputId)) {
+        continue; // 幂等：已存在的记录不重复追加
+      }
+      staged.push(copy);
+    }
+    this.records.push(...staged);
+  }
+
   public getHumanInputs(): InputRecord[] {
     return this.records.filter((r) => r.source === 'human');
   }

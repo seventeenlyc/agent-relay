@@ -76,3 +76,41 @@ test('ledger: stored records are frozen against mutation', () => {
     (record as any).rawContent = 'Tampered content';
   }, /TypeError/);
 });
+
+test('ledger: restoreFrom reproduces the exact head hash and rejects tampered records', () => {
+  const original = new InputLedger();
+  original.appendUserMessage('Build the pipeline with a read-only handoff');
+  original.appendUserMessage('Also do not change the public API', original.getAllRecords()[0].inputId);
+  original.appendSystemHandoff('generated handoff material must not become human authority');
+
+  const snapshot = original.getAllRecords();
+  const expectedHead = original.getHeadHash();
+
+  const restored = new InputLedger();
+  restored.restoreFrom(snapshot);
+
+  assert.strictEqual(restored.getHeadHash(), expectedHead, 'head hash must survive a restore verbatim');
+  assert.deepStrictEqual(
+    restored.getAllRecords().map((r) => r.inputId),
+    snapshot.map((r) => r.inputId),
+    'input ids must not be regenerated'
+  );
+  assert.deepStrictEqual(
+    restored.getAllRecords().map((r) => r.timestamp),
+    snapshot.map((r) => r.timestamp),
+    'timestamps must not be regenerated'
+  );
+  assert.strictEqual(restored.getHumanInputs().length, 2);
+  assert.strictEqual(restored.getAllRecords().length, 3);
+
+  // Tampered content must be rejected outright
+  const tampered = snapshot.map((r) => ({ ...r, rawContent: `${r.rawContent} (edited)` }));
+  const victim = new InputLedger();
+  assert.throws(() => victim.restoreFrom(tampered), /hash mismatch/);
+  assert.strictEqual(victim.getAllRecords().length, 0, 'a rejected restore must leave the ledger untouched');
+
+  // Restoring twice must not duplicate records
+  restored.restoreFrom(snapshot);
+  assert.strictEqual(restored.getAllRecords().length, 3);
+  assert.strictEqual(restored.getHeadHash(), expectedHead);
+});

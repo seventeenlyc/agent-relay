@@ -45,6 +45,63 @@ export class TaskGraph {
     return task;
   }
 
+  /**
+   * 从持久化快照逐字重建任务图（重启恢复用）。
+   * 保留 status / testEvidenceHash / completedAt，因此 computeSnapshotHash() 可稳定复现。
+   * 校验：依赖必须存在、不得自引用、不得成环、completed 必须携带证据。
+   * 任何一条不合法即整体拒绝，不留下半还原状态。
+   */
+  public restoreFrom(items: TaskItem[]): void {
+    if (items.length === 0) {
+      return;
+    }
+
+    const staged: TaskItem[] = [];
+    const stagedById = new Map<string, TaskItem>();
+    for (const item of items) {
+      const existing = this.tasks.get(item.taskId) ?? stagedById.get(item.taskId);
+      if (existing) {
+        continue; // 幂等：已存在的任务不重复还原
+      }
+      const copy: TaskItem = {
+        taskId: item.taskId,
+        requirementId: item.requirementId,
+        title: item.title,
+        description: item.description,
+        dependencies: [...item.dependencies],
+        status: item.status,
+        allowedPaths: [...item.allowedPaths],
+        expectedArtifacts: [...item.expectedArtifacts],
+        testEvidenceHash: item.testEvidenceHash,
+        completedAt: item.completedAt
+      };
+      validateTaskItem(copy);
+      if (copy.dependencies.includes(copy.taskId)) {
+        throw new Error(`TaskGraph: Task ${copy.taskId} cannot depend on itself`);
+      }
+      if (copy.status === 'completed' && !copy.testEvidenceHash) {
+        throw new Error(`TaskGraph: Task ${copy.taskId} completed status requires testEvidenceHash`);
+      }
+      staged.push(copy);
+      stagedById.set(copy.taskId, copy);
+    }
+
+    for (const task of staged) {
+      for (const dep of task.dependencies) {
+        if (!this.tasks.has(dep) && !stagedById.has(dep)) {
+          throw new Error(`TaskGraph: Task ${task.taskId} has unknown dependency ${dep}`);
+        }
+        if (this.wouldCreateCycle(dep, task.taskId)) {
+          throw new Error(`TaskGraph: Restoring task ${task.taskId} creates a circular dependency with ${dep}`);
+        }
+      }
+    }
+
+    for (const task of staged) {
+      this.tasks.set(task.taskId, task);
+    }
+  }
+
   private wouldCreateCycle(startId: string, targetId: string): boolean {
     const visited = new Set<string>();
     const queue = [startId];

@@ -148,3 +148,43 @@ test('controller/index: exports TaskGraph and ScopeGuard', () => {
   assert.strictEqual(ControllerScopeGuard, ScopeGuard);
 });
 
+test('tasks: restoreFrom preserves status, evidence and completedAt across a rebuild', () => {
+  const original = new TaskGraph();
+  original.addTask({ taskId: 'u1', requirementId: 'req-1', title: 'Unit 1' });
+  original.addTask({ taskId: 'u2', requirementId: 'req-1', title: 'Unit 2', dependencies: ['u1'] });
+  original.addTask({ taskId: 'u3', requirementId: 'req-1', title: 'Unit 3', dependencies: ['u2'] });
+  original.completeTaskWithEvidence('u1', 'evidence-u1');
+  original.updateTaskStatus('u2', 'in_progress');
+
+  const snapshot = original.getAllTasks();
+  const expectedHash = original.computeSnapshotHash();
+
+  const restored = new TaskGraph();
+  restored.restoreFrom(snapshot);
+
+  assert.strictEqual(restored.computeSnapshotHash(), expectedHash, 'snapshot hash must survive a rebuild');
+  assert.strictEqual(restored.getTask('u1')?.status, 'completed');
+  assert.strictEqual(restored.getTask('u1')?.testEvidenceHash, 'evidence-u1');
+  assert.strictEqual(restored.getTask('u1')?.completedAt, original.getTask('u1')?.completedAt);
+  assert.strictEqual(restored.getTask('u2')?.status, 'in_progress');
+  assert.strictEqual(restored.getTask('u3')?.status, 'pending');
+  assert.deepStrictEqual(restored.getTask('u2')?.dependencies, ['u1']);
+
+  // A completed task without evidence must be rejected
+  assert.throws(
+    () => new TaskGraph().restoreFrom([{ ...snapshot[0], status: 'completed', testEvidenceHash: undefined }]),
+    /completed status requires testEvidenceHash|evidence/i
+  );
+
+  // A dependency on a task that does not exist must be rejected
+  assert.throws(
+    () => new TaskGraph().restoreFrom([{ ...snapshot[2], dependencies: ['ghost'] }]),
+    /unknown dependency/i
+  );
+
+  // Restoring twice must not duplicate tasks
+  restored.restoreFrom(snapshot);
+  assert.strictEqual(restored.getAllTasks().length, 3);
+  assert.strictEqual(restored.computeSnapshotHash(), expectedHash);
+});
+
