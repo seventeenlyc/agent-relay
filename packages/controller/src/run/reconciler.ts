@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { computeSha256 } from '../../../protocol/src/index.ts';
 import type { WorkspaceFingerprint } from '../../../protocol/src/types.ts';
+import type { AgentRelayAdapter } from '../../../protocol/src/adapter.ts';
 import { WorkspaceSentinel } from '../workspace/sentinel.ts';
 import type { RunStore, RunState, RunRecord, HandoffRecord } from './store.ts';
 import type { ControlIntentLog } from './intent.ts';
 import type { RunEventLog } from './events.ts';
+import { SessionChainLedger } from './chain.ts';
+import type { DurableLeaseManager } from '../handoff/durable-lease.ts';
 
 export interface ReconcileResult {
   recoveredState: RunState;
@@ -21,6 +25,11 @@ export interface RunReconcilerOptions {
   sentinel?: WorkspaceSentinel;
   intents?: ControlIntentLog;
   events?: RunEventLog;
+  adapter?: AgentRelayAdapter;
+  chain?: SessionChainLedger;
+  leaseManager?: DurableLeaseManager;
+  adapterName?: string;
+  quiescenceTimeoutMs?: number;
 }
 
 export class RunReconciler {
@@ -224,6 +233,256 @@ export class RunReconciler {
       }
     }
 
+    // =========================================================================
+    // Phase 3: 外部会话与发信箱对账 (V14, V17, V18)
+    // =========================================================================
+
+    const runBeforePhase3 = this.options.store.getRun(runId) ?? refreshedRunAfterPhase1;
+
+    // -------------------------------------------------------------------------
+    // 3.1 V14 Outbox 创建会话对账
+    // -------------------------------------------------------------------------
+    const pendingOutbox = this.options.store.listPendingOutbox(runId);
+    const createSessionMsgs = pendingOutbox.filter((m) => m.topic === 'create_session');
+
+    for (const msg of createSessionMsgs) {
+      if (!msg.targetSessionId) continue;
+      const handoff = msg.handoffId ? this.options.store.getHandoff(msg.handoffId) : undefined;
+      const isTargetHandoffOrRunMatching =
+        (handoff && ['CREATING', 'STARTING', 'PREPARING'].includes(handoff.state)) ||
+        (!handoff && ['CREATING', 'STARTING', 'PREPARING'].includes(runBeforePhase3.state)) ||
+        ['CREATING', 'STARTING', 'PREPARING'].includes(runBeforePhase3.state);
+
+      if (isTargetHandoffOrRunMatching) {
+        if (this.options.adapter) {
+          let inspected;
+          let inspectError = false;
+          try {
+            inspected = await this.options.adapter.inspectSession(msg.targetSessionId);
+          } catch {
+            inspectError = true;
+          }
+
+          if (!inspectError && inspected && inspected.active !== false) {
+            this.options.store.updateOutboxState(msg.msgId, 'DISPATCHED');
+            if (handoff && handoff.state === 'CREATING') {
+              this.options.store.updateHandoff(handoff.handoffId, { state: 'PREPARING' });
+            }
+            if (runBeforePhase3.state === 'STARTING') {
+              this.options.store.updateRunState(runId, 'PREPARING');
+            }
+            healedActions.push('rebound_session:' + msg.targetSessionId);
+          } else {
+            this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+              blockedReason: 'session_creation_ambiguous'
+            });
+            if (this.options.events) {
+              this.options.events.record({
+                runId,
+                type: 'recovery_required',
+                payload: { reason: 'session_creation_ambiguous', targetSessionId: msg.targetSessionId }
+              });
+            }
+            return {
+              recoveredState: 'RECOVERY_REQUIRED',
+              healedActions,
+              requiresManualIntervention: true,
+              reason: 'session_creation_ambiguous'
+            };
+          }
+        } else {
+          this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+            blockedReason: 'session_creation_ambiguous'
+          });
+          if (this.options.events) {
+            this.options.events.record({
+              runId,
+              type: 'recovery_required',
+              payload: { reason: 'session_creation_ambiguous', targetSessionId: msg.targetSessionId }
+            });
+          }
+          return {
+            recoveredState: 'RECOVERY_REQUIRED',
+            healedActions,
+            requiresManualIntervention: true,
+            reason: 'session_creation_ambiguous'
+          };
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3.2 V17 幂等执行令牌重发
+    // -------------------------------------------------------------------------
+    const authorizedHandoff = this.findAuthorizedHandoff(runId);
+    if (authorizedHandoff && authorizedHandoff.targetSessionId) {
+      const latestRun = this.options.store.getRun(runId) ?? runBeforePhase3;
+      const epoch = latestRun.currentEpoch || authorizedHandoff.epoch || 1;
+      const targetSessionId = authorizedHandoff.targetSessionId;
+
+      const chain = this.options.chain ?? new SessionChainLedger(this.options.store);
+      const chainLinks = chain.list(runId);
+      const alreadyInChain = chainLinks.some((link) => link.nextSessionId === targetSessionId);
+
+      if (this.options.adapter) {
+        const token = `EXEC_TOKEN_${randomUUID()}`;
+        let authOk = false;
+        try {
+          authOk = Boolean(await this.options.adapter.authorizeExecution(targetSessionId, epoch, token));
+        } catch {
+          authOk = false;
+        }
+
+        if (authOk) {
+          this.options.store.transaction(() => {
+            if (!alreadyInChain) {
+              chain.append({
+                runId,
+                prevSessionId: authorizedHandoff.sourceSessionId,
+                nextSessionId: targetSessionId,
+                adapter: this.options.adapterName ?? 'unknown',
+                provider: latestRun.model.provider,
+                model: latestRun.model.model,
+                effort: latestRun.model.effort,
+                epoch,
+                handoffId: authorizedHandoff.handoffId,
+                reason: 'unit_completed'
+              });
+              try {
+                chain.supersede(authorizedHandoff.sourceSessionId);
+              } catch {
+                // Ignore if sourceSessionId not in chain
+              }
+            }
+
+            this.options.store.updateHandoff(authorizedHandoff.handoffId, { state: 'COMPLETED' });
+
+            const outbox = this.options.store.findOutboxByHandoff(authorizedHandoff.handoffId, 'create_session');
+            if (outbox) {
+              this.options.store.updateOutboxState(outbox.msgId, 'ACKED');
+            }
+            const currentPending = this.options.store.listPendingOutbox(runId);
+            for (const m of currentPending) {
+              if (m.topic === 'create_session' && m.targetSessionId === targetSessionId) {
+                this.options.store.updateOutboxState(m.msgId, 'ACKED');
+              }
+            }
+
+            this.options.store.updateRunState(runId, 'RUNNING', {
+              currentSessionId: targetSessionId,
+              currentEpoch: epoch,
+              blockedReason: null,
+              pauseReason: null
+            });
+          });
+
+          healedActions.push('replayed_execution_token:' + targetSessionId);
+
+          try {
+            await this.options.adapter.interruptOwned(authorizedHandoff.sourceSessionId);
+          } catch {
+            // Ignore interrupt failure on previous session
+          }
+
+          if (this.options.events) {
+            this.options.events.record({
+              runId,
+              type: 'reconcile_token_replayed',
+              sessionId: targetSessionId,
+              payload: { handoffId: authorizedHandoff.handoffId }
+            });
+          }
+
+          return {
+            recoveredState: 'RUNNING',
+            requiresManualIntervention: false,
+            healedActions
+          };
+        } else {
+          this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+            blockedReason: 'execution_authorization_failed'
+          });
+          if (this.options.events) {
+            this.options.events.record({
+              runId,
+              type: 'recovery_required',
+              payload: { reason: 'execution_authorization_failed', targetSessionId }
+            });
+          }
+          return {
+            recoveredState: 'RECOVERY_REQUIRED',
+            healedActions,
+            requiresManualIntervention: true,
+            reason: 'execution_authorization_failed'
+          };
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3.3 V18 旧会话静止与退避
+    // -------------------------------------------------------------------------
+    const runForQuiescence = this.options.store.getRun(runId) ?? runBeforePhase3;
+    if (runForQuiescence.state === 'DRAINING') {
+      const fromSessionId = runForQuiescence.currentSessionId;
+      if (!fromSessionId || !this.options.adapter) {
+        this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+          blockedReason: 'old_session_quiescence_unconfirmed'
+        });
+        if (this.options.events) {
+          this.options.events.record({
+            runId,
+            type: 'recovery_required',
+            payload: { reason: 'old_session_quiescence_unconfirmed' }
+          });
+        }
+        return {
+          recoveredState: 'RECOVERY_REQUIRED',
+          healedActions,
+          requiresManualIntervention: true,
+          reason: 'old_session_quiescence_unconfirmed'
+        };
+      }
+
+      await this.options.adapter.interruptOwned(fromSessionId);
+      const q = await this.options.adapter.awaitQuiescence(
+        fromSessionId,
+        this.options.quiescenceTimeoutMs ?? 5000
+      );
+
+      if (q !== 'quiescent') {
+        this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', {
+          blockedReason: 'old_session_quiescence_unconfirmed'
+        });
+        if (this.options.events) {
+          this.options.events.record({
+            runId,
+            type: 'recovery_required',
+            payload: { reason: 'old_session_quiescence_unconfirmed', sessionId: fromSessionId }
+          });
+        }
+        return {
+          recoveredState: 'RECOVERY_REQUIRED',
+          healedActions,
+          requiresManualIntervention: true,
+          reason: 'old_session_quiescence_unconfirmed'
+        };
+      }
+
+      this.options.store.updateRunState(runId, 'CHECKPOINTED');
+      const drainingHandoff = this.findHandoffInState(runId, 'DRAINING');
+      if (drainingHandoff) {
+        this.options.store.updateHandoff(drainingHandoff.handoffId, { state: 'CHECKPOINTED' });
+      }
+
+      healedActions.push('quiesced_draining_session:' + fromSessionId);
+      return {
+        recoveredState: 'CHECKPOINTED',
+        requiresManualIntervention: false,
+        healedActions
+      };
+    }
+
     const finalRun = this.options.store.getRun(runId) ?? refreshedRunAfterPhase1;
     const requiresManualIntervention = finalRun.state === 'RECOVERY_REQUIRED';
 
@@ -233,6 +492,64 @@ export class RunReconciler {
       requiresManualIntervention,
       reason: requiresManualIntervention ? finalRun.blockedReason ?? 'recovery_required' : undefined
     };
+  }
+
+  private findAuthorizedHandoff(runId: string): HandoffRecord | undefined {
+    const db = (this.options.store as any).db;
+    if (db) {
+      const row = db
+        .prepare(
+          `SELECT * FROM handoffs
+             WHERE run_id = ?
+               AND state = 'AUTHORIZED'
+             ORDER BY created_at DESC, rowid DESC LIMIT 1`
+        )
+        .get(runId) as Record<string, unknown> | undefined;
+      if (row) {
+        return {
+          handoffId: row.handoff_id as string,
+          runId: row.run_id as string,
+          epoch: row.epoch as number,
+          sourceSessionId: row.source_session_id as string,
+          targetSessionId: row.target_session_id as string | undefined,
+          state: row.state as string,
+          manifestPath: row.manifest_path as string | undefined,
+          manifestHash: row.manifest_hash as string | undefined,
+          createdAt: row.created_at as number,
+          updatedAt: row.updated_at as number
+        };
+      }
+    }
+    return undefined;
+  }
+
+  private findHandoffInState(runId: string, state: string): HandoffRecord | undefined {
+    const db = (this.options.store as any).db;
+    if (db) {
+      const row = db
+        .prepare(
+          `SELECT * FROM handoffs
+             WHERE run_id = ?
+               AND state = ?
+             ORDER BY created_at DESC, rowid DESC LIMIT 1`
+        )
+        .get(runId, state) as Record<string, unknown> | undefined;
+      if (row) {
+        return {
+          handoffId: row.handoff_id as string,
+          runId: row.run_id as string,
+          epoch: row.epoch as number,
+          sourceSessionId: row.source_session_id as string,
+          targetSessionId: row.target_session_id as string | undefined,
+          state: row.state as string,
+          manifestPath: row.manifest_path as string | undefined,
+          manifestHash: row.manifest_hash as string | undefined,
+          createdAt: row.created_at as number,
+          updatedAt: row.updated_at as number
+        };
+      }
+    }
+    return undefined;
   }
 
   private getLatestPublishedHandoff(runId: string): HandoffRecord | undefined {

@@ -167,7 +167,12 @@ export class RunController {
       dataDir: this.dataDir,
       sentinel: this.sentinel ?? undefined,
       intents: this.intents,
-      events: this.events
+      events: this.events,
+      adapter: this.adapter,
+      chain: this.chain,
+      leaseManager: this.leaseManager,
+      adapterName: this.adapterName,
+      quiescenceTimeoutMs: this.quiescenceTimeoutMs
     });
   }
 
@@ -1105,7 +1110,12 @@ export class RunController {
       dataDir: this.dataDir,
       sentinel: this.sentinel,
       intents: this.intents,
-      events: this.events
+      events: this.events,
+      adapter: this.adapter,
+      chain: this.chain,
+      leaseManager: this.leaseManager,
+      adapterName: this.adapterName,
+      quiescenceTimeoutMs: this.quiescenceTimeoutMs
     });
     this.stateMachine = null;
     this.triggerPolicy = new TriggerPolicy({ maxActiveDurationMs: this.maxActiveDurationMs });
