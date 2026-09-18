@@ -138,7 +138,23 @@ const SCHEMA_STATEMENTS: string[] = [
     timestamp  INTEGER NOT NULL,
     payload    TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (run_id, seq)
-  )`
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS run_outbox (
+    msg_id            TEXT PRIMARY KEY,
+    run_id            TEXT NOT NULL,
+    handoff_id        TEXT,
+    topic             TEXT NOT NULL,
+    target_session_id TEXT,
+    payload           TEXT NOT NULL DEFAULT '{}',
+    state             TEXT NOT NULL,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_outbox_run ON run_outbox(run_id, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_outbox_handoff ON run_outbox(handoff_id)`
 ];
 
 /**

@@ -169,6 +169,29 @@ export interface InputLedgerRow {
   record: InputRecord;
 }
 
+export interface OutboxRow {
+  msgId: string;
+  runId: string;
+  handoffId: string | null;
+  topic: string;
+  targetSessionId: string | null;
+  payload: string;
+  state: 'PENDING' | 'DISPATCHED' | 'ACKED' | 'FAILED';
+  attempts: number;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface EnqueueOutboxInput {
+  msgId?: string;
+  runId: string;
+  handoffId?: string;
+  topic: string;
+  targetSessionId?: string;
+  payload?: Record<string, unknown>;
+}
+
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -686,7 +709,126 @@ export class RunStore {
     }));
   }
 
+  // ─── outbox ───
+
+  public enqueueOutbox(input: EnqueueOutboxInput): OutboxRow {
+    const ts = this.now();
+    const msgId = input.msgId ?? randomUUID();
+    const payload = input.payload ? JSON.stringify(input.payload) : '{}';
+    const row: OutboxRow = {
+      msgId,
+      runId: input.runId,
+      handoffId: input.handoffId ?? null,
+      topic: input.topic,
+      targetSessionId: input.targetSessionId ?? null,
+      payload,
+      state: 'PENDING',
+      attempts: 0,
+      lastError: null,
+      createdAt: ts,
+      updatedAt: ts
+    };
+    this.db
+      .prepare(
+        `INSERT INTO run_outbox (
+           msg_id, run_id, handoff_id, topic, target_session_id,
+           payload, state, attempts, last_error, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        row.msgId,
+        row.runId,
+        row.handoffId,
+        row.topic,
+        row.targetSessionId,
+        row.payload,
+        row.state,
+        row.attempts,
+        row.lastError,
+        row.createdAt,
+        row.updatedAt
+      );
+    return row;
+  }
+
+  public updateOutboxState(
+    msgId: string,
+    state: OutboxRow['state'],
+    options?: { lastError?: string; incrementAttempts?: boolean }
+  ): void {
+    if (options?.incrementAttempts) {
+      if (options.lastError !== undefined) {
+        this.db
+          .prepare(
+            `UPDATE run_outbox SET state = ?, attempts = attempts + 1, last_error = ?, updated_at = ? WHERE msg_id = ?`
+          )
+          .run(state, options.lastError, this.now(), msgId);
+      } else {
+        this.db
+          .prepare(
+            `UPDATE run_outbox SET state = ?, attempts = attempts + 1, updated_at = ? WHERE msg_id = ?`
+          )
+          .run(state, this.now(), msgId);
+      }
+    } else {
+      if (options?.lastError !== undefined) {
+        this.db
+          .prepare(
+            `UPDATE run_outbox SET state = ?, last_error = ?, updated_at = ? WHERE msg_id = ?`
+          )
+          .run(state, options.lastError, this.now(), msgId);
+      } else {
+        this.db
+          .prepare(
+            `UPDATE run_outbox SET state = ?, updated_at = ? WHERE msg_id = ?`
+          )
+          .run(state, this.now(), msgId);
+      }
+    }
+  }
+
+  public getOutbox(msgId: string): OutboxRow | undefined {
+    const row = this.db.prepare('SELECT * FROM run_outbox WHERE msg_id = ?').get(msgId) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? this.mapOutbox(row) : undefined;
+  }
+
+  public findOutboxByHandoff(handoffId: string, topic: string): OutboxRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM run_outbox WHERE handoff_id = ? AND topic = ? ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(handoffId, topic) as Record<string, unknown> | undefined;
+    return row ? this.mapOutbox(row) : undefined;
+  }
+
+  public listPendingOutbox(runId: string): OutboxRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM run_outbox WHERE run_id = ? AND state IN ('PENDING', 'DISPATCHED') ORDER BY created_at ASC`
+      )
+      .all(runId) as Array<Record<string, unknown>>;
+    return rows.map((row) => this.mapOutbox(row));
+  }
+
   // ─── mappers ───
+
+  private mapOutbox(row: Record<string, unknown>): OutboxRow {
+    return {
+      msgId: row.msg_id as string,
+      runId: row.run_id as string,
+      handoffId: asString(row.handoff_id) ?? null,
+      topic: row.topic as string,
+      targetSessionId: asString(row.target_session_id) ?? null,
+      payload: row.payload as string,
+      state: row.state as OutboxRow['state'],
+      attempts: row.attempts as number,
+      lastError: asString(row.last_error) ?? null,
+      createdAt: row.created_at as number,
+      updatedAt: row.updated_at as number
+    };
+  }
 
   private mapRun(row: Record<string, unknown>): RunRecord {
     return {
