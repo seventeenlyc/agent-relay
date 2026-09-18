@@ -185,65 +185,62 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
 
   const dataDir = resolveDataDir(args.dataDir, env);
 
+  let opened: { db: RelayDatabase; store: RunStore } | null = null;
   try {
     // 打开库也在 try 内：库损坏时 openStore 会抛错，必须转成退出码而不是抛给调用方
-    const opened = openStore(dataDir);
+    opened = openStore(dataDir);
     if (!opened) {
       io.err(`no run found: ${path.join(dataDir, 'relay.db')} does not exist`);
       return 2;
     }
     const { db, store } = opened;
 
-    try {
-      const run = resolveRun(store, args.runId);
+    const run = resolveRun(store, args.runId);
 
-      switch (args.command) {
-        case 'status': {
+    switch (args.command) {
+      case 'status': {
+        const view = buildRunStatus(store, run.runId);
+        io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
+        return 0;
+      }
+
+      case 'chain': {
+        const links = new SessionChainLedger(store).list(run.runId);
+        if (args.json) {
+          io.out(JSON.stringify(links, null, 2));
+        } else {
+          io.out(renderChain(links).trimEnd());
+        }
+        return 0;
+      }
+
+      case 'watch': {
+        const iterations = args.iterations ?? Number.POSITIVE_INFINITY;
+        for (let i = 0; i < iterations; i++) {
+          if (i > 0 && args.intervalMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, args.intervalMs));
+          }
           const view = buildRunStatus(store, run.runId);
           io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
-          return 0;
-        }
-
-        case 'chain': {
-          const links = new SessionChainLedger(store).list(run.runId);
-          if (args.json) {
-            io.out(JSON.stringify(links, null, 2));
-          } else {
-            io.out(renderChain(links).trimEnd());
+          if (TERMINAL_RUN_STATES.includes(view.state)) {
+            break;
           }
-          return 0;
         }
-
-        case 'watch': {
-          const iterations = args.iterations ?? Number.POSITIVE_INFINITY;
-          for (let i = 0; i < iterations; i++) {
-            if (i > 0 && args.intervalMs > 0) {
-              await new Promise((resolve) => setTimeout(resolve, args.intervalMs));
-            }
-            const view = buildRunStatus(store, run.runId);
-            io.out(args.json ? renderStatusJson(view) : renderStatusCard(view).trimEnd());
-            if (TERMINAL_RUN_STATES.includes(view.state)) {
-              break;
-            }
-          }
-          return 0;
-        }
-
-        default: {
-          const action = args.command as 'pause' | 'stop' | 'resume' | 'disable';
-          const rule = INTENT_GUARD[action];
-          if (!rule.allows(run)) {
-            io.err(`${rule.rejection} ${run.state}`);
-            return 3;
-          }
-          // 先落库，再打印确认——确认输出即代表意图已持久化
-          const intent = new ControlIntentLog(store).append(run.runId, rule.kind);
-          io.out(`${action} requested for run ${run.runId} (watermark ${intent.watermark}, intent ${intent.intentId})`);
-          return 0;
-        }
+        return 0;
       }
-    } finally {
-      db.close();
+
+      default: {
+        const action = args.command as 'pause' | 'stop' | 'resume' | 'disable';
+        const rule = INTENT_GUARD[action];
+        if (!rule.allows(run)) {
+          io.err(`${rule.rejection} ${run.state}`);
+          return 3;
+        }
+        // 先落库，再打印确认——确认输出即代表意图已持久化
+        const intent = new ControlIntentLog(store).append(run.runId, rule.kind);
+        io.out(`${action} requested for run ${run.runId} (watermark ${intent.watermark}, intent ${intent.intentId})`);
+        return 0;
+      }
     }
   } catch (err) {
     if (err instanceof NotFoundError) {
@@ -252,5 +249,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     }
     io.err(`error: ${(err as Error).message}`);
     return 1;
+  } finally {
+    if (opened) {
+      opened.db.close();
+    }
   }
 }
