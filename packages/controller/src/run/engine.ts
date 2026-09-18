@@ -719,6 +719,11 @@ export class RunController {
         manifestHash: published.hash
       });
     });
+    this.events.record({
+      runId: this.runId,
+      type: 'handoff_snapshot_published',
+      payload: { handoffId, manifestPath: published.filePath, manifestHash: published.hash }
+    });
     await this.triggerFaultHook('after_db_publish', { handoffId, sessionId: fromSessionId, epoch: run.currentEpoch });
 
     // 步骤 4：创建意图已持久化在 handoffs 行上，去重后创建只读接手会话
