@@ -249,6 +249,26 @@ export class RunReconciler {
           reason: 'workspace_fingerprint_mismatch',
           discrepancyDetails
         };
+      } else if (
+        refreshedRunAfterPhase1.state === 'RECOVERY_REQUIRED' &&
+        refreshedRunAfterPhase1.blockedReason === 'workspace_fingerprint_mismatch'
+      ) {
+        const pendingHandoff =
+          this.findHandoffInState(runId, 'PREPARING') ??
+          this.findHandoffInState(runId, 'CREATING') ??
+          this.findHandoffInState(runId, 'STARTING');
+        const restoredState = pendingHandoff ? 'PREPARING' : 'RUNNING';
+        this.options.store.updateRunState(runId, restoredState, {
+          blockedReason: null
+        });
+        healedActions.push('resolved_workspace_mismatch');
+        if (this.options.events) {
+          this.options.events.record({
+            runId,
+            type: 'workspace_mismatch_resolved',
+            payload: { recoveredState: restoredState }
+          });
+        }
       }
     }
 
