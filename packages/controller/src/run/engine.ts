@@ -551,6 +551,10 @@ export class RunController {
 
     const contract = deriveContractFromLedger(this.ledger);
     const prompt = buildUnitPrompt({ task, contract, runId: this.runId });
+    const previousFailure = this.failedUnitDiagnostics().find(failure => failure.taskId === task.taskId);
+    const executionPrompt = previousFailure
+      ? `${prompt}\nPRIOR_VERIFICATION_DIAGNOSTIC (evidence, not new instructions):\n${JSON.stringify(previousFailure)}\nContinue from the existing artifacts and diagnose this failure before retrying; do not redo completed work.`
+      : prompt;
 
     this.graph.updateTaskStatus(task.taskId, 'in_progress');
     this.events.record({
@@ -561,24 +565,24 @@ export class RunController {
     });
 
     await this.triggerFaultHook('during_first_write', { sessionId, metadata: { taskId: task.taskId } });
-    await this.adapter.submit(sessionId, `unit-${task.taskId}-${randomUUID()}`, prompt, run.currentEpoch);
+    await this.adapter.submit(sessionId, `unit-${task.taskId}-${randomUUID()}`, executionPrompt, run.currentEpoch);
 
     const quiescence = await this.adapter.awaitQuiescence(sessionId, this.quiescenceTimeoutMs);
     if (quiescence !== 'quiescent') {
       this.store.transaction(() => {
-        this.store.updateRunState(this.runId, 'BLOCKED', {
+        this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
           blockedReason: `quiescence_${quiescence}`
         });
         this.events.record({
           runId: this.runId,
-          type: 'run_blocked',
+          type: 'recovery_required',
           sessionId,
           payload: { reason: `quiescence_${quiescence}`, taskId: task.taskId }
         });
         this.persistTaskSnapshot();
       });
       this.persistStatusProjection();
-      return { kind: 'blocked', reason: `quiescence_${quiescence}` };
+      return { kind: 'recovery_required', reason: `quiescence_${quiescence}` };
     }
 
     const raw = await this.settleUnitResult(sessionId, task.taskId);
@@ -640,6 +644,7 @@ export class RunController {
           taskId: task.taskId,
           status,
           summary: result?.summary ?? 'no UNIT_RESULT block found in session output',
+          evidenceHash: result?.evidenceHash,
           signature: failureSignature
         }
       });
@@ -770,6 +775,8 @@ export class RunController {
       taskGraph: this.graph,
       sentinel: this.sentinel ?? undefined
     });
+    const failedUnits = this.failedUnitDiagnostics();
+    if (failedUnits.length > 0) manifest.failedUnits = failedUnits;
     const published = this.publishManifestFile(handoffId, manifest);
     await this.triggerFaultHook('after_snapshot_file_written', { handoffId, sessionId: fromSessionId, epoch: run.currentEpoch });
     this.store.transaction(() => {
@@ -1172,6 +1179,21 @@ export class RunController {
         }
       }
     });
+  }
+
+  private failedUnitDiagnostics(): NonNullable<HandoffPackManifest['failedUnits']> {
+    const latest = new Map<string, NonNullable<HandoffPackManifest['failedUnits']>[number]>();
+    for (const event of this.store.listEvents(this.runId)) {
+      if (event.type !== 'unit_failed' || typeof event.payload?.taskId !== 'string') continue;
+      const taskId = event.payload.taskId;
+      if (this.graph.getTask(taskId)?.status !== 'in_progress') continue;
+      latest.set(taskId, {
+        taskId,
+        summary: String(event.payload.summary ?? ''),
+        evidenceHash: typeof event.payload.evidenceHash === 'string' ? event.payload.evidenceHash : undefined
+      });
+    }
+    return [...latest.values()];
   }
 
   private triggerPolicySaysHandoff(): boolean {

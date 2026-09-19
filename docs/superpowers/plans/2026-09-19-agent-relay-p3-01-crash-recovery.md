@@ -854,7 +854,7 @@ git commit -m "test(recovery): add V25 workspace fingerprint mismatch and git br
 - Consumes: `RunController`, `DurableLeaseManager`, `ControlIntentLog`
 - Produces: 完整覆盖 V18（旧 worker 挂起静止超时）、V21（停止/关闭后重启不被误判为续跑）、V33（CAS 后令牌消费前并发取消）。
 
-- [ ] **Step 1: 编写端到端验收测试 `tests/recovery/crash-recovery.test.ts`**
+- [x] **Step 1: 编写端到端验收测试 `tests/recovery/crash-recovery.test.ts`**
 
 覆盖场景：
 1. **V18**: 旧 worker 静止超时，不凭租约过期强行转交写权，阻断在 `RECOVERY_REQUIRED`。
@@ -862,12 +862,12 @@ git commit -m "test(recovery): add V25 workspace fingerprint mismatch and git br
 3. **V33**: 在 CAS 转让成功后、令牌消费前注入取消，递增 epoch 使令牌失效，新会话被终止并保持只读。
 4. 验证 5 条恢复机械不变量。
 
-- [ ] **Step 2: 运行测试验证**
+- [x] **Step 2: 运行测试验证**
 
 运行：`node --experimental-strip-types tests/recovery/crash-recovery.test.ts`
 预期：PASS
 
-- [ ] **Step 3: 提交代码**
+- [x] **Step 3: 提交代码**
 
 ```bash
 git add tests/recovery/crash-recovery.test.ts
@@ -885,21 +885,23 @@ git commit -m "test(recovery): add V18 quiescence timeout, V21 intent persistenc
 - Consumes: `RunController`, `RunStore`
 - Produces: 完整覆盖 V07（单元测试失败记录诊断现场）、V26（长作业与超时未知结果不伪报完成、不重复重试），并跑通全部 264+ 测试用例。
 
-- [ ] **Step 1: 编写端到端验收测试 `tests/recovery/partial-tasks.test.ts`**
+- [x] **Step 1: 编写端到端验收测试 `tests/recovery/partial-tasks.test.ts`**
 
 覆盖场景：
 1. **V07**: 单元测试失败时任务保持 `in_progress`，记录失败证据与输出，恢复时交接包保留现场，不从头重做。
 2. **V26**: 模拟长作业无法跨会话接管、外部动作超时未决，停在 `RECOVERY_REQUIRED`，不重复重放外部动作。
 3. 自动化校验全部 5 项机械恢复不变量。
 
-- [ ] **Step 2: 运行全部测试套件验证整体绿灯**
+- [x] **Step 2: 运行全部测试套件验证整体绿灯**
 
 运行：`npm test`
 预期：全部现有 264 测试 + 新增恢复套件（预估共 280+ 测试）100% 通过，0 失败。
 
-- [ ] **Step 3: 提交代码与文档更新**
+- [x] **Step 3: 提交代码与文档更新**
 
 ```bash
 git add tests/recovery/partial-tasks.test.ts
 git commit -m "test(recovery): add V07 partial failure and V26 long job safety acceptance suite"
 ```
+
+任务 9、10 已完成。验收结果：全量 310/310 通过，0 失败、0 跳过。详见 docs/decisions/p3-01-task9-10-validation.md。

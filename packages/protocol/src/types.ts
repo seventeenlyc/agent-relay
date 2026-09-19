@@ -47,6 +47,7 @@ export interface WorkspaceFingerprint {
 }
 
 export interface HandoffPackManifest {
+  failedUnits?: Array<{ taskId: string; summary: string; evidenceHash?: string }>;
   handoffId: string;
   runId: string;
   epoch: number;
