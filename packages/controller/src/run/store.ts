@@ -487,6 +487,18 @@ export class RunStore {
     return row ? this.mapHandoff(row) : undefined;
   }
 
+  public findHandoffInState(runId: string, state: string): HandoffRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM handoffs
+           WHERE run_id = ?
+             AND state = ?
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`
+      )
+      .get(runId, state) as Record<string, unknown> | undefined;
+    return row ? this.mapHandoff(row) : undefined;
+  }
+
   public updateHandoff(handoffId: string, patch: HandoffPatch): void {
     const existing = this.getHandoff(handoffId);
     if (!existing) {

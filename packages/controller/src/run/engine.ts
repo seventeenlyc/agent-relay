@@ -16,7 +16,7 @@ import { normalizeWorkspaceKey } from '../workspace/key.ts';
 import { HandoffPackager } from '../workspace/checkpoint.ts';
 import { HandoffStateMachine } from '../handoff/state-machine.ts';
 import { DurableLeaseManager } from '../handoff/durable-lease.ts';
-import { RunStore, type RunRecord, type RunState } from './store.ts';
+import { RunStore, type RunRecord, type RunState, type HandoffRecord } from './store.ts';
 import { ControlIntentLog, type PendingControl } from './intent.ts';
 import { SessionChainLedger } from './chain.ts';
 import { RunEventLog } from './events.ts';
@@ -279,6 +279,15 @@ export class RunController {
     if (run.state === 'BLOCKED') return { kind: 'blocked', reason: run.blockedReason ?? 'blocked' };
     if (run.state === 'RECOVERY_REQUIRED') {
       return { kind: 'recovery_required', reason: run.blockedReason ?? 'recovery_required' };
+    }
+
+    // 交接中间态处理：若经过 reconcile() 自愈，存在处于 PREPARING 态的已对账交接，可安全恢复并继续交接八步；
+    // 否则说明控制器死在交接中途且未经对账，此时绝不能推进单元，转入 RECOVERY_REQUIRED。
+    if (run.state === 'PREPARING') {
+      const handoff = this.store.findHandoffInState(this.runId, 'PREPARING');
+      if (handoff && handoff.targetSessionId && handoff.sourceSessionId) {
+        return this.resumeHandoff(handoff, run);
+      }
     }
 
     // 交接中间态只有重启后才可能被看到：活着的交接在同一次 tick 内设置并清除它们，
@@ -829,10 +838,90 @@ export class RunController {
     }
     await this.triggerFaultHook('session_create_response_lost', { handoffId, sessionId: toSessionId });
 
+    return this.completeHandoffFromPreparing(
+      handoffId,
+      fromSessionId,
+      toSessionId,
+      manifest,
+      coordinator,
+      outboxMsgId,
+      run
+    );
+  }
+
+  private async resumeHandoff(handoff: HandoffRecord, run: RunRecord): Promise<RunTickOutcome> {
+    const handoffId = handoff.handoffId;
+    const toSessionId = handoff.targetSessionId;
+    const fromSessionId = handoff.sourceSessionId;
+    if (!toSessionId || !fromSessionId || !handoff.manifestPath || !fs.existsSync(handoff.manifestPath)) {
+      const reason = `run_found_mid_handoff:${run.state}`;
+      this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', { blockedReason: reason });
+      this.events.record({
+        runId: this.runId,
+        type: 'recovery_required',
+        payload: { reason }
+      });
+      this.persistStatusProjection();
+      return { kind: 'recovery_required', reason };
+    }
+
+    let manifest: HandoffPackManifest;
+    try {
+      const manifestContent = fs.readFileSync(handoff.manifestPath, 'utf8');
+      manifest = JSON.parse(manifestContent) as HandoffPackManifest;
+    } catch {
+      const reason = `run_found_mid_handoff:${run.state}`;
+      this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', { blockedReason: reason });
+      this.events.record({
+        runId: this.runId,
+        type: 'recovery_required',
+        payload: { reason }
+      });
+      this.persistStatusProjection();
+      return { kind: 'recovery_required', reason };
+    }
+
+    this.stateMachine = new HandoffStateMachine(this.runId, fromSessionId, run.currentEpoch);
+    this.stateMachine.requestHandoff('unit_completed');
+    this.stateMachine.checkpointCompleted(handoffId);
+    this.stateMachine.beginStarting();
+
+    const coordinator = this.createCoordinator({
+      adapter: this.adapter,
+      leaseManager: this.leaseManager,
+      stateMachine: this.stateMachine,
+      workspaceKey: run.workspaceKey,
+      runId: this.runId
+    });
+    coordinator.startNewSession(toSessionId);
+
+    const outbox = this.store.findOutboxByHandoff(handoffId, 'create_session');
+    const outboxMsgId = outbox?.msgId;
+
+    return this.completeHandoffFromPreparing(
+      handoffId,
+      fromSessionId,
+      toSessionId,
+      manifest,
+      coordinator,
+      outboxMsgId,
+      run
+    );
+  }
+
+  private async completeHandoffFromPreparing(
+    handoffId: string,
+    fromSessionId: string,
+    toSessionId: string,
+    manifest: HandoffPackManifest,
+    coordinator: HandshakeCoordinator | any,
+    outboxMsgId: string | undefined,
+    run: RunRecord
+  ): Promise<RunTickOutcome> {
     await this.triggerFaultHook('during_readonly_prep', { handoffId, sessionId: toSessionId });
     const newQuiescence = await this.adapter.awaitQuiescence(toSessionId, this.quiescenceTimeoutMs);
     if (newQuiescence !== 'quiescent') {
-      this.stateMachine.markRecoveryRequired();
+      this.stateMachine?.markRecoveryRequired();
       this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: `new_session_quiescence_${newQuiescence}`
@@ -849,7 +938,7 @@ export class RunController {
     // 步骤 6：解析并核对 ACK
     const ack = coordinator.parseAckFromOutput(this.adapter.getSessionOutput(toSessionId));
     if (!ack) {
-      this.stateMachine.markRecoveryRequired();
+      this.stateMachine?.markRecoveryRequired();
       this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', { blockedReason: 'ack_not_received' });
       this.events.record({
@@ -919,7 +1008,7 @@ export class RunController {
 
     const authResult = transactionResult.authResult;
     if (!authResult.success) {
-      this.stateMachine.markRecoveryRequired();
+      this.stateMachine?.markRecoveryRequired();
       this.abandonHandoff(handoffId);
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: authResult.error ?? 'handshake_failed'
@@ -998,7 +1087,7 @@ export class RunController {
     // 步骤 8：送达执行令牌，旧会话封存并回收
     const authorized = await this.adapter.authorizeExecution(toSessionId, authResult.epoch!, authResult.executionToken!);
     if (!authorized) {
-      this.stateMachine.markRecoveryRequired();
+      this.stateMachine?.markRecoveryRequired();
       this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
         blockedReason: 'authorize_execution_failed'
       });

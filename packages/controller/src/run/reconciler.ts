@@ -142,6 +142,12 @@ export class RunReconciler {
           pauseReason: null,
           blockedReason: null
         });
+        if (this.options.leaseManager) {
+          const lease = this.options.leaseManager.getLease(run.workspaceKey);
+          if (lease) {
+            this.options.leaseManager.releaseLease(run.workspaceKey, lease.currentOwner);
+          }
+        }
         healedActions.push('honoured_stop_intent');
         if (this.options.events) {
           this.options.events.record({
@@ -534,32 +540,7 @@ export class RunReconciler {
   }
 
   private findHandoffInState(runId: string, state: string): HandoffRecord | undefined {
-    const db = (this.options.store as any).db;
-    if (db) {
-      const row = db
-        .prepare(
-          `SELECT * FROM handoffs
-             WHERE run_id = ?
-               AND state = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT 1`
-        )
-        .get(runId, state) as Record<string, unknown> | undefined;
-      if (row) {
-        return {
-          handoffId: row.handoff_id as string,
-          runId: row.run_id as string,
-          epoch: row.epoch as number,
-          sourceSessionId: row.source_session_id as string,
-          targetSessionId: row.target_session_id as string | undefined,
-          state: row.state as string,
-          manifestPath: row.manifest_path as string | undefined,
-          manifestHash: row.manifest_hash as string | undefined,
-          createdAt: row.created_at as number,
-          updatedAt: row.updated_at as number
-        };
-      }
-    }
-    return undefined;
+    return this.options.store.findHandoffInState(runId, state);
   }
 
   private getLatestPublishedHandoff(runId: string): HandoffRecord | undefined {
