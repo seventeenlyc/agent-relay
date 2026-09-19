@@ -576,6 +576,28 @@ export class RunController {
     const result = raw && raw.taskId === task.taskId ? normalizeUnitResult(raw) : null;
     const nextUnitCount = run.currentSessionUnitCount + 1;
 
+    if (result && result.status === 'unknown_outcome') {
+      this.store.transaction(() => {
+        this.store.updateRunState(this.runId, 'RECOVERY_REQUIRED', {
+          currentSessionUnitCount: nextUnitCount,
+          blockedReason: 'external_action_outcome_unknown'
+        });
+        this.events.record({
+          runId: this.runId,
+          type: 'recovery_required',
+          sessionId,
+          payload: {
+            reason: 'external_action_outcome_unknown',
+            taskId: task.taskId,
+            summary: result.summary ?? 'external action outcome unknown'
+          }
+        });
+        this.persistTaskSnapshot();
+      });
+      this.persistStatusProjection();
+      return { kind: 'recovery_required', reason: 'external_action_outcome_unknown' };
+    }
+
     if (result && result.status === 'completed') {
       const evidenceHash = result.evidenceHash!;
       this.store.transaction(() => {
@@ -918,26 +940,31 @@ export class RunController {
     if (lateIntent) {
       if (lateIntent.kind === 'stop_now') {
         // 废弃执行令牌：递增租约 epoch，使刚授予的 epoch 失效（V33）
-        this.leaseManager.compareAndSetOwner(
+        const bumped = this.leaseManager.compareAndSetOwner(
           run.workspaceKey,
           toSessionId,
-          authResult.epoch!,
           toSessionId,
+          authResult.epoch!,
           authResult.epoch! + 1
         );
+        if (!bumped) {
+          throw new Error(`Failed to invalidate lease epoch for workspace ${run.workspaceKey}`);
+        }
         this.intents.consume(lateIntent.intentId);
         this.abandonHandoff(handoffId);
         await this.adapter.interruptOwned(toSessionId);
         await this.adapter.awaitQuiescence(toSessionId, this.quiescenceTimeoutMs);
         await this.adapter.interruptOwned(fromSessionId);
-        this.store.updateRunState(this.runId, 'CANCELLED', {
-          pauseReason: null,
-          blockedReason: 'control_intent_stop_now'
-        });
-        this.events.record({
-          runId: this.runId,
-          type: 'run_cancelled',
-          payload: { intentId: lateIntent.intentId, stage: 'post_cas_pre_authorize' }
+        this.store.transaction(() => {
+          this.store.updateRunState(this.runId, 'CANCELLED', {
+            pauseReason: null,
+            blockedReason: 'control_intent_stop_now'
+          });
+          this.events.record({
+            runId: this.runId,
+            type: 'run_cancelled',
+            payload: { intentId: lateIntent.intentId, stage: 'post_cas_pre_authorize' }
+          });
         });
         this.persistStatusProjection();
         return {

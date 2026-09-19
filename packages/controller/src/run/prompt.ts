@@ -4,7 +4,7 @@ import type { TaskItem, RequirementContract } from '../../../protocol/src/types.
 export const UNIT_RESULT_START = 'UNIT_RESULT_START';
 export const UNIT_RESULT_END = 'UNIT_RESULT_END';
 
-export type UnitResultStatus = 'completed' | 'partial' | 'failed';
+export type UnitResultStatus = 'completed' | 'partial' | 'failed' | 'unknown_outcome';
 
 export interface UnitResult {
   taskId: string;
@@ -13,7 +13,7 @@ export interface UnitResult {
   summary?: string;
 }
 
-const VALID_STATUSES: UnitResultStatus[] = ['completed', 'partial', 'failed'];
+const VALID_STATUSES: UnitResultStatus[] = ['completed', 'partial', 'failed', 'unknown_outcome'];
 
 /**
  * 首次会话的启动简报。明确声明本提示是 generated_handoff（系统生成），
