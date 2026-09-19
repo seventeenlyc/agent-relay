@@ -916,9 +916,40 @@ export class RunController {
     // 防御性复核：交接包含 await，意图可能在事务提交后、授权前到达
     const lateIntent = this.intents.resolve(this.runId);
     if (lateIntent) {
+      if (lateIntent.kind === 'stop_now') {
+        // 废弃执行令牌：递增租约 epoch，使刚授予的 epoch 失效（V33）
+        this.leaseManager.compareAndSetOwner(
+          run.workspaceKey,
+          toSessionId,
+          authResult.epoch!,
+          toSessionId,
+          authResult.epoch! + 1
+        );
+        this.intents.consume(lateIntent.intentId);
+        this.abandonHandoff(handoffId);
+        await this.adapter.interruptOwned(toSessionId);
+        await this.adapter.awaitQuiescence(toSessionId, this.quiescenceTimeoutMs);
+        await this.adapter.interruptOwned(fromSessionId);
+        this.store.updateRunState(this.runId, 'CANCELLED', {
+          pauseReason: null,
+          blockedReason: 'control_intent_stop_now'
+        });
+        this.events.record({
+          runId: this.runId,
+          type: 'run_cancelled',
+          payload: { intentId: lateIntent.intentId, stage: 'post_cas_pre_authorize' }
+        });
+        this.persistStatusProjection();
+        return {
+          kind: 'stopped',
+          intentId: lateIntent.intentId
+        };
+      }
+
       if (lateIntent.kind === 'pause_next_node') {
         this.intents.consume(lateIntent.intentId);
       }
+      this.abandonHandoff(handoffId);
       await this.adapter.interruptOwned(toSessionId);
       this.store.updateRunState(this.runId, 'PAUSED', {
         pauseReason: `control_intent_${lateIntent.kind}`
