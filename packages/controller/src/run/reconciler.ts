@@ -47,6 +47,11 @@ export class RunReconciler {
 
     const healedActions: string[] = [];
 
+    // A stale AUTHORIZED handoff must never resurrect a terminal run.
+    if (['CANCELLED', 'COMPLETED', 'DISABLED'].includes(run.state)) {
+      return { recoveredState: run.state, healedActions, requiresManualIntervention: false };
+    }
+
     // =========================================================================
     // Phase 1: 静态不变量核对与孤立快照清理 (V16, V21)
     // =========================================================================
@@ -137,25 +142,60 @@ export class RunReconciler {
     if (this.options.intents) {
       const pending = this.options.intents.resolve(runId);
       if (pending && pending.kind === 'stop_now') {
-        this.options.intents.consume(pending.intentId);
-        this.options.store.updateRunState(runId, 'CANCELLED', {
-          pauseReason: null,
-          blockedReason: null
-        });
-        if (this.options.leaseManager) {
-          const lease = this.options.leaseManager.getLease(run.workspaceKey);
-          if (lease) {
-            this.options.leaseManager.releaseLease(run.workspaceKey, lease.currentOwner);
+        const sessions = new Set<string>();
+        if (run.currentSessionId) sessions.add(run.currentSessionId);
+        for (const link of this.options.store.listChain(runId)) {
+          if (link.supersededAt === undefined) sessions.add(link.nextSessionId);
+        }
+        const authorized = this.findAuthorizedHandoff(runId);
+        if (authorized) {
+          sessions.add(authorized.sourceSessionId);
+          if (authorized.targetSessionId) sessions.add(authorized.targetSessionId);
+        }
+        for (const msg of this.options.store.listPendingOutbox(runId)) {
+          if (msg.topic === 'create_session' && msg.targetSessionId) sessions.add(msg.targetSessionId);
+        }
+        // Lease expiry/release cannot revoke a surviving process's physical write capability.
+        for (const sessionId of sessions) {
+          let quiet = false;
+          try {
+            const adapter = this.options.adapter;
+            if (adapter) {
+              const inspected = await adapter.inspectSession(sessionId);
+              if (inspected?.active === false) quiet = true;
+              else {
+                await adapter.interruptOwned(sessionId);
+                quiet = await adapter.awaitQuiescence(sessionId, this.options.quiescenceTimeoutMs ?? 5000) === 'quiescent';
+              }
+            }
+          } catch { /* Unknown stop results retain both the intent and lease. */ }
+          if (!quiet) {
+            this.options.store.updateRunState(runId, 'RECOVERY_REQUIRED', { blockedReason: 'stop_quiescence_unconfirmed' });
+            return { recoveredState: 'RECOVERY_REQUIRED', healedActions, requiresManualIntervention: true, reason: 'stop_quiescence_unconfirmed' };
           }
         }
-        healedActions.push('honoured_stop_intent');
-        if (this.options.events) {
-          this.options.events.record({
-            runId,
-            type: 'run_cancelled',
-            payload: { intentId: pending.intentId, reason: 'reconciler_honoured_stop_intent' }
+        this.options.store.transaction(() => {
+          this.options.intents!.consume(pending.intentId);
+          this.options.store.updateRunState(runId, 'CANCELLED', {
+            pauseReason: null,
+            blockedReason: null
           });
-        }
+          if (this.options.leaseManager) {
+            const lease = this.options.leaseManager.getLease(run.workspaceKey);
+            if (lease) {
+              this.options.leaseManager.releaseLease(run.workspaceKey, lease.currentOwner);
+            }
+          }
+          if (this.options.events) {
+            this.options.events.record({
+              runId,
+              type: 'run_cancelled',
+              payload: { intentId: pending.intentId, reason: 'reconciler_honoured_stop_intent' }
+            });
+          }
+          if (authorized) this.options.store.updateHandoff(authorized.handoffId, { state: 'ABANDONED' });
+        });
+        healedActions.push('honoured_stop_intent');
         return {
           recoveredState: 'CANCELLED',
           healedActions,
