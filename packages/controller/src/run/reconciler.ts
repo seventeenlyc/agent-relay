@@ -78,6 +78,14 @@ export class RunReconciler {
         // 清理残存的 .tmp 文件
         if (fs.existsSync(tmpManifestPath)) {
           fs.rmSync(tmpManifestPath, { force: true });
+          const handoff = this.options.store.getHandoff(handoffId);
+          if (handoff && handoff.state !== 'ABANDONED') {
+            this.options.store.updateHandoff(handoffId, { state: 'ABANDONED' });
+          }
+          const currentRun = this.options.store.getRun(runId);
+          if (currentRun && (currentRun.state === 'CHECKPOINTED' || currentRun.state === 'DRAINING')) {
+            this.options.store.updateRunState(runId, 'RUNNING');
+          }
           const action = `purged_corrupted_snapshot:${handoffId}`;
           if (!healedActions.includes(action)) {
             healedActions.push(action);
@@ -90,6 +98,7 @@ export class RunReconciler {
           let parseFailed = false;
           try {
             content = fs.readFileSync(manifestPath, 'utf8');
+            JSON.parse(content);
             hash = computeSha256(content);
           } catch {
             parseFailed = true;
@@ -110,6 +119,10 @@ export class RunReconciler {
             fs.rmSync(manifestPath, { force: true });
             if (handoff && handoff.state !== 'ABANDONED') {
               this.options.store.updateHandoff(handoffId, { state: 'ABANDONED' });
+            }
+            const currentRun = this.options.store.getRun(runId);
+            if (currentRun && (currentRun.state === 'CHECKPOINTED' || currentRun.state === 'DRAINING')) {
+              this.options.store.updateRunState(runId, 'RUNNING');
             }
             const action = `purged_corrupted_snapshot:${handoffId}`;
             if (!healedActions.includes(action)) {
