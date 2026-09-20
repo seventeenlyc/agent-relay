@@ -5,7 +5,7 @@ import path from 'node:path';
 import { computeSha256 } from '../../../protocol/src/index.ts';
 import type { AgentRelayAdapter } from '../../../protocol/src/adapter.ts';
 import type { HandshakeCoordinator } from '../../../protocol/src/coordinator.ts';
-import type { HandoffPackManifest, TaskItem } from '../../../protocol/src/types.ts';
+import type { HandoffPackManifest, TaskItem, InputRecord } from '../../../protocol/src/types.ts';
 import { InputLedger } from '../inputs/ledger.ts';
 import { deriveContractFromLedger } from '../inputs/supersedes.ts';
 import { TaskGraph } from '../tasks/graph.ts';
@@ -266,6 +266,23 @@ export class RunController {
       inputLedgerHeadHash: this.ledger.getHeadHash(),
       taskSnapshotHash: this.graph.computeSnapshotHash()
     };
+  }
+
+  public getInputLedger(): InputLedger {
+    return this.ledger;
+  }
+
+  public appendUserMessage(content: string, supersedesId?: string): InputRecord {
+    this.requireRun();
+    const record = this.ledger.appendUserMessage(content, supersedesId);
+    this.store.appendInputRow(this.runId, this.store.nextInputSeq(this.runId), record);
+    this.events.record({
+      runId: this.runId,
+      type: 'user_message_appended',
+      payload: { inputId: record.inputId, supersedesId, sha256Hash: record.sha256Hash }
+    });
+    this.persistStatusProjection();
+    return record;
   }
 
   // ─── 编排循环 ───
