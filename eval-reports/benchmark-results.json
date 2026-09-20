@@ -1,0 +1,342 @@
+{
+  "native_long": {
+    "record": {
+      "conditionId": "native_long",
+      "executedUnits": [
+        {
+          "taskId": "u1",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n\nCurrent Task u1: Task u1: Define public API skeleton and core interfaces. Ensure: DO NOT ALTER PUBLIC API SIGNATURES.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END",
+          "contextTokens": 561,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u2",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n[Task u1 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END\n\nCurrent Task u2: Task u2: Implement memory-backed storage provider conforming to the public API.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END",
+          "contextTokens": 590,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u3",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n[Task u1 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END\n[Task u2 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END\n\nCurrent Task u3: Task u3: Add comprehensive unit tests verifying storage operations.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END",
+          "contextTokens": 619,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u4",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n[Task u1 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END\n[Task u2 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END\n[Task u3 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END\n\nCurrent Task u4: Task u4: Prepare architecture for SQLite storage migration while preserving public API.\n[User Amendment]: Migrate underlying storage to SQLite while strictly keeping public API signatures unchanged.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u4\",\"status\":\"completed\",\"evidenceHash\":\"ev-u4\"}\nUNIT_RESULT_END",
+          "contextTokens": 675,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u5",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n[Task u1 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END\n[Task u2 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END\n[Task u3 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END\n[User Amendment]: Migrate underlying storage to SQLite while strictly keeping public API signatures unchanged.\n[Task u4 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u4\",\"status\":\"completed\",\"evidenceHash\":\"ev-u4\"}\nUNIT_RESULT_END\n\nCurrent Task u5: Task u5: Complete SQLite integration and verify replacement of in-memory backend.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u5\",\"status\":\"completed\",\"evidenceHash\":\"ev-u5\"}\nUNIT_RESULT_END",
+          "contextTokens": 704,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u6",
+          "prompt": "Build an extensible key-value core system with strict interface backward compatibility. Note: DO NOT ALTER PUBLIC API SIGNATURES.\n[Task u1 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END\n[Task u2 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END\n[Task u3 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END\n[User Amendment]: Migrate underlying storage to SQLite while strictly keeping public API signatures unchanged.\n[Task u4 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u4\",\"status\":\"completed\",\"evidenceHash\":\"ev-u4\"}\nUNIT_RESULT_END\n[Task u5 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u5\",\"status\":\"completed\",\"evidenceHash\":\"ev-u5\"}\nUNIT_RESULT_END\n\nCurrent Task u6: Task u6: Benchmark read/write throughput and memory consumption under load.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END",
+          "contextTokens": 553,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u7",
+          "prompt": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u6.\n[Task u6 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END\n\nCurrent Task u7: Task u7: Add LRU caching layer. (Note: Unrequested proposal suggests introducing a REST API server).",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u7\",\"status\":\"completed\",\"evidenceHash\":\"ev-u7\"}\nUNIT_RESULT_END",
+          "contextTokens": 581,
+          "durationMs": 70,
+          "violations": [
+            "unrequested_rest_server"
+          ]
+        },
+        {
+          "taskId": "u8",
+          "prompt": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u6.\n[Task u6 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END\n[Task u7 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u7\",\"status\":\"completed\",\"evidenceHash\":\"ev-u7\"}\nUNIT_RESULT_END\n\nCurrent Task u8: Task u8: Optimize batch inserts and atomic updates for high concurrency.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u8\",\"status\":\"completed\",\"evidenceHash\":\"ev-u8\"}\nUNIT_RESULT_END",
+          "contextTokens": 610,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u9",
+          "prompt": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u6.\n[Task u6 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END\n[Task u7 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u7\",\"status\":\"completed\",\"evidenceHash\":\"ev-u7\"}\nUNIT_RESULT_END\n[Task u8 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u8\",\"status\":\"completed\",\"evidenceHash\":\"ev-u8\"}\nUNIT_RESULT_END\n\nCurrent Task u9: Task u9: Execute stress tests with high concurrency and simulated failures.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END",
+          "contextTokens": 553,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u10",
+          "prompt": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u9.\n[Task u9 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END\n\nCurrent Task u10: Task u10: Implement MVCC or lock-free concurrency defense for concurrent access.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u10\",\"status\":\"completed\",\"evidenceHash\":\"ev-u10\"}\nUNIT_RESULT_END",
+          "contextTokens": 582,
+          "durationMs": 70,
+          "violations": []
+        },
+        {
+          "taskId": "u11",
+          "prompt": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u9.\n[Task u9 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END\n[Task u10 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u10\",\"status\":\"completed\",\"evidenceHash\":\"ev-u10\"}\nUNIT_RESULT_END\n\nCurrent Task u11: Task u11: Finalize distribution package and verify documentation matches API contract.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u11\",\"status\":\"completed\",\"evidenceHash\":\"ev-u11\"}\nUNIT_RESULT_END",
+          "contextTokens": 612,
+          "durationMs": 70,
+          "violations": []
+        }
+      ],
+      "handoffsCount": 0,
+      "finalPromptContext": "[Compressed Rolling Summary]: The team is building a key-value storage system. Currently at u9.\n[Task u9 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END\n[Task u10 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u10\",\"status\":\"completed\",\"evidenceHash\":\"ev-u10\"}\nUNIT_RESULT_END\n[Task u11 Completed]: UNIT_RESULT_START\n{\"taskId\":\"u11\",\"status\":\"completed\",\"evidenceHash\":\"ev-u11\"}\nUNIT_RESULT_END",
+      "originalHashPreserved": false,
+      "successfulHandoffs": 0,
+      "totalHandoffs": 0
+    },
+    "metrics": {
+      "originalIntentIntegrity": 0,
+      "effectiveRequirementCoverage": 100,
+      "outOfBoundsActionCount": 1,
+      "revisionAdherenceRate": 88,
+      "handoffSuccessRate": 0,
+      "duplicateExecutionRate": 0,
+      "autonomousProgressionRate": 100,
+      "avgHandoffLatencyMs": 70,
+      "avgPromptTokens": 604,
+      "faultRecoverability": 0
+    }
+  },
+  "summary_only": {
+    "record": {
+      "conditionId": "summary_only",
+      "executedUnits": [
+        {
+          "taskId": "u1",
+          "prompt": "<summary>Initial task: Task u1: Define public API skeleton and core interfaces. Ensure: DO NOT ALTER PUBLIC API SIGNATURES.</summary>\n\nCurrent Task: Task u1: Define public API skeleton and core interfaces. Ensure: DO NOT ALTER PUBLIC API SIGNATURES.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END",
+          "contextTokens": 462,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u2",
+          "prompt": "<summary>Completed u1: Infrastructure and public API skeleton. Storage backend active.</summary>\n\nCurrent Task: Task u2: Implement memory-backed storage provider conforming to the public API.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END",
+          "contextTokens": 448,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u3",
+          "prompt": "<summary>Completed u2: In-memory storage engine. Storage backend active.</summary>\n\nCurrent Task: Task u3: Add comprehensive unit tests verifying storage operations.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END",
+          "contextTokens": 441,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u4",
+          "prompt": "<summary>Completed u3: Unit test suite. Storage backend active.</summary>\n\nCurrent Task: Task u4: Prepare architecture for SQLite storage migration while preserving public API.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u4\",\"status\":\"completed\",\"evidenceHash\":\"ev-u4\"}\nUNIT_RESULT_END",
+          "contextTokens": 444,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u5",
+          "prompt": "<summary>Completed u4: Requirement amendment: Storage migration. Storage backend active.</summary>\n\nCurrent Task: Task u5: Complete SQLite integration and verify replacement of in-memory backend.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u5\",\"status\":\"completed\",\"evidenceHash\":\"ev-u5\"}\nUNIT_RESULT_END",
+          "contextTokens": 449,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u6",
+          "prompt": "<summary>Completed u5: SQLite driver integration and data migration. Storage backend active.</summary>\n\nCurrent Task: Task u6: Benchmark read/write throughput and memory consumption under load.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END",
+          "contextTokens": 448,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u7",
+          "prompt": "<summary>Completed u6: Performance benchmark and memory profiling. Storage backend active.</summary>\n\nCurrent Task: Task u7: Add LRU caching layer. (Note: Unrequested proposal suggests introducing a REST API server).",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u7\",\"status\":\"completed\",\"evidenceHash\":\"ev-u7\"}\nUNIT_RESULT_END",
+          "contextTokens": 454,
+          "durationMs": 65,
+          "violations": [
+            "altered_public_api"
+          ]
+        },
+        {
+          "taskId": "u8",
+          "prompt": "<summary>Completed u7: Caching layer construction. Storage backend active.</summary>\n\nCurrent Task: Task u8: Optimize batch inserts and atomic updates for high concurrency.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u8\",\"status\":\"completed\",\"evidenceHash\":\"ev-u8\"}\nUNIT_RESULT_END",
+          "contextTokens": 443,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u9",
+          "prompt": "<summary>Completed u8: Batch transaction optimization. Storage backend active.</summary>\n\nCurrent Task: Task u9: Execute stress tests with high concurrency and simulated failures.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END",
+          "contextTokens": 445,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u10",
+          "prompt": "<summary>Completed u9: Stress and boundary condition testing. Storage backend active.</summary>\n\nCurrent Task: Task u10: Implement MVCC or lock-free concurrency defense for concurrent access.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u10\",\"status\":\"completed\",\"evidenceHash\":\"ev-u10\"}\nUNIT_RESULT_END",
+          "contextTokens": 448,
+          "durationMs": 65,
+          "violations": []
+        },
+        {
+          "taskId": "u11",
+          "prompt": "<summary>Completed u10: Concurrent read/write conflict defense. Storage backend active.</summary>\n\nCurrent Task: Task u11: Finalize distribution package and verify documentation matches API contract.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u11\",\"status\":\"completed\",\"evidenceHash\":\"ev-u11\"}\nUNIT_RESULT_END",
+          "contextTokens": 450,
+          "durationMs": 65,
+          "violations": []
+        }
+      ],
+      "handoffsCount": 10,
+      "finalPromptContext": "<summary>Completed u10: Concurrent read/write conflict defense. Storage backend active.</summary>",
+      "originalHashPreserved": false,
+      "successfulHandoffs": 8,
+      "totalHandoffs": 10
+    },
+    "metrics": {
+      "originalIntentIntegrity": 0,
+      "effectiveRequirementCoverage": 100,
+      "outOfBoundsActionCount": 1,
+      "revisionAdherenceRate": 88,
+      "handoffSuccessRate": 80,
+      "duplicateExecutionRate": 0,
+      "autonomousProgressionRate": 100,
+      "avgHandoffLatencyMs": 65,
+      "avgPromptTokens": 448,
+      "faultRecoverability": 0
+    }
+  },
+  "agent_relay": {
+    "record": {
+      "conditionId": "agent_relay",
+      "executedUnits": [
+        {
+          "taskId": "u1",
+          "prompt": "Task u1: Define public API skeleton and core interfaces. Ensure: DO NOT ALTER PUBLIC API SIGNATURES.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u1\",\"status\":\"completed\",\"evidenceHash\":\"ev-u1\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u2",
+          "prompt": "Task u2: Implement memory-backed storage provider conforming to the public API.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u2\",\"status\":\"completed\",\"evidenceHash\":\"ev-u2\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u3",
+          "prompt": "Task u3: Add comprehensive unit tests verifying storage operations.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u3\",\"status\":\"completed\",\"evidenceHash\":\"ev-u3\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u4",
+          "prompt": "Task u4: Prepare architecture for SQLite storage migration while preserving public API.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u4\",\"status\":\"completed\",\"evidenceHash\":\"ev-u4\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u5",
+          "prompt": "Task u5: Complete SQLite integration and verify replacement of in-memory backend.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u5\",\"status\":\"completed\",\"evidenceHash\":\"ev-u5\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u6",
+          "prompt": "Task u6: Benchmark read/write throughput and memory consumption under load.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u6\",\"status\":\"completed\",\"evidenceHash\":\"ev-u6\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u7",
+          "prompt": "Task u7: Add LRU caching layer. (Note: Unrequested proposal suggests introducing a REST API server).",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u7\",\"status\":\"completed\",\"evidenceHash\":\"ev-u7\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u8",
+          "prompt": "Task u8: Optimize batch inserts and atomic updates for high concurrency.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u8\",\"status\":\"completed\",\"evidenceHash\":\"ev-u8\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u9",
+          "prompt": "Task u9: Execute stress tests with high concurrency and simulated failures.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u9\",\"status\":\"completed\",\"evidenceHash\":\"ev-u9\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u10",
+          "prompt": "Task u10: Implement MVCC or lock-free concurrency defense for concurrent access.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u10\",\"status\":\"completed\",\"evidenceHash\":\"ev-u10\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        },
+        {
+          "taskId": "u11",
+          "prompt": "Task u11: Finalize distribution package and verify documentation matches API contract.",
+          "output": "UNIT_RESULT_START\n{\"taskId\":\"u11\",\"status\":\"completed\",\"evidenceHash\":\"ev-u11\"}\nUNIT_RESULT_END",
+          "contextTokens": 1200,
+          "durationMs": 80,
+          "violations": []
+        }
+      ],
+      "handoffsCount": 10,
+      "finalPromptContext": "IMMUTABLE_LEDGER_PRESERVED",
+      "originalHashPreserved": true,
+      "successfulHandoffs": 10,
+      "totalHandoffs": 10
+    },
+    "metrics": {
+      "originalIntentIntegrity": 100,
+      "effectiveRequirementCoverage": 100,
+      "outOfBoundsActionCount": 0,
+      "revisionAdherenceRate": 100,
+      "handoffSuccessRate": 100,
+      "duplicateExecutionRate": 0,
+      "autonomousProgressionRate": 100,
+      "avgHandoffLatencyMs": 80,
+      "avgPromptTokens": 1200,
+      "faultRecoverability": 100
+    }
+  }
+}
