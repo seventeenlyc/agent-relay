@@ -103,7 +103,9 @@ export class ConfigMerger {
 
       if (changed) {
         this.backupFile(targetPath);
-        fs.writeFileSync(targetPath, JSON.stringify(json, null, 2), 'utf8');
+        const tmpPath = `${targetPath}.tmp`;
+        fs.writeFileSync(tmpPath, JSON.stringify(json, null, 2), 'utf8');
+        fs.renameSync(tmpPath, targetPath);
       }
       return changed;
     } catch {
@@ -121,7 +123,9 @@ export class ConfigMerger {
     if (regex.test(original)) {
       this.backupFile(targetPath);
       const replaced = original.replace(regex, '\n').trim() + '\n';
-      fs.writeFileSync(targetPath, replaced, 'utf8');
+      const tmpPath = `${targetPath}.tmp`;
+      fs.writeFileSync(tmpPath, replaced, 'utf8');
+      fs.renameSync(tmpPath, targetPath);
       return true;
     }
     return false;
