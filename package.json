@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/adapters/*.test.ts tests/contracts/*.test.ts tests/policy/*.test.ts tests/run/*.test.ts tests/scenarios/*.test.ts tests/transactions/*.test.ts tests/workspace/*.test.ts tests/recovery/*.test.ts tests/eval/*.test.ts tests/installer/*.test.ts",
+    "test": "node --experimental-strip-types --test tests/adapters/*.test.ts tests/contracts/*.test.ts tests/policy/*.test.ts tests/run/*.test.ts tests/scenarios/*.test.ts tests/transactions/*.test.ts tests/workspace/*.test.ts tests/recovery/*.test.ts tests/eval/*.test.ts tests/installer/*.test.ts tests/acceptance/*.test.ts",
     "test:recovery": "node --experimental-strip-types --test tests/recovery/*.test.ts",
     "test:contracts": "node --experimental-strip-types --test tests/contracts/*.test.ts",
     "test:scenarios": "node --experimental-strip-types --test tests/scenarios/*.test.ts",
     "test:eval": "node --experimental-strip-types --test tests/eval/*.test.ts",
     "test:installer": "node --experimental-strip-types --test tests/installer/*.test.ts",
-    "eval": "node --experimental-strip-types tests/eval/long-chain.test.ts"
+    "eval": "node --experimental-strip-types tests/eval/long-chain.test.ts",
+    "demo": "node --experimental-strip-types --test tests/acceptance/*.test.ts",
+    "verify:all": "node --experimental-strip-types --test tests/adapters/*.test.ts tests/contracts/*.test.ts tests/policy/*.test.ts tests/run/*.test.ts tests/scenarios/*.test.ts tests/transactions/*.test.ts tests/workspace/*.test.ts tests/recovery/*.test.ts tests/eval/*.test.ts tests/installer/*.test.ts tests/acceptance/*.test.ts"
   }
 }
