@@ -9,6 +9,9 @@ import type { ControlIntentKind } from '../../controller/src/run/store.ts';
 import { SessionChainLedger } from '../../controller/src/run/chain.ts';
 import { buildRunStatus, renderStatusCard, renderStatusJson } from '../../controller/src/run/status.ts';
 import { renderChain } from './render.ts';
+import { Installer } from '../../installer/src/installer.ts';
+import { Uninstaller } from '../../installer/src/uninstaller.ts';
+import { MigrationEngine } from '../../installer/src/migration.ts';
 
 export interface CliIo {
   out(line: string): void;
@@ -30,11 +33,95 @@ const USAGE = [
   '  stop      立即停止',
   '  resume    从暂停中继续',
   '  disable   禁用自动交接',
-  '  watch     轮询刷新状态卡（--interval <ms>，--iterations <n>）'
+  '  watch     轮询刷新状态卡（--interval <ms>，--iterations <n>）',
+  '  install   安装 agent-relay 到目标适配器（--target=claude|codex|dsh|all，--workspace=<path>，--global）',
+  '  upgrade   升级工作区数据库 schema（--workspace=<path>）',
+  '  uninstall 卸载 agent-relay（--target=claude|codex|dsh|all，--workspace=<path>，--global，--purge-all）'
 ].join('\n');
 
 const COMMANDS = ['status', 'chain', 'pause', 'stop', 'resume', 'disable', 'watch'] as const;
 type Command = (typeof COMMANDS)[number];
+
+const INSTALLER_COMMANDS = ['install', 'upgrade', 'uninstall'] as const;
+type InstallerCommand = (typeof INSTALLER_COMMANDS)[number];
+
+interface InstallerArgs {
+  command: InstallerCommand;
+  target: 'claude' | 'codex' | 'dsh' | 'all';
+  workspace: string;
+  global: boolean;
+  purgeAll: boolean;
+}
+
+function parseInstallerArgs(command: InstallerCommand, argv: string[]): InstallerArgs {
+  const parsed: InstallerArgs = {
+    command,
+    target: 'all',
+    workspace: process.cwd(),
+    global: false,
+    purgeAll: false,
+  };
+
+  for (const arg of argv) {
+    if (arg.startsWith('--target=')) {
+      parsed.target = arg.slice('--target='.length) as InstallerArgs['target'];
+    } else if (arg.startsWith('--workspace=')) {
+      parsed.workspace = arg.slice('--workspace='.length);
+    } else if (arg === '--global') {
+      parsed.global = true;
+    } else if (arg === '--purge-all') {
+      parsed.purgeAll = true;
+    }
+  }
+
+  return parsed;
+}
+
+async function executeInstallerCommand(args: InstallerArgs, io: CliIo): Promise<number> {
+  switch (args.command) {
+    case 'install': {
+      const installer = new Installer();
+      const results = await installer.install({
+        target: args.target,
+        workspacePath: args.workspace,
+        global: args.global,
+      });
+      for (const r of results) {
+        io.out(`${r.status}: ${r.target} (${r.scope}) -> ${r.filePath}`);
+      }
+      return 0;
+    }
+    case 'upgrade': {
+      const dbPath = path.join(args.workspace, 'relay.db');
+      if (fs.existsSync(dbPath)) {
+        const db = new RelayDatabase({ dbPath });
+        try {
+          const engine = new MigrationEngine();
+          const result = engine.migrate(db);
+          io.out(`migrated schema from v${result.from} to v${result.to}`);
+        } finally {
+          db.close();
+        }
+      } else {
+        io.out('no relay.db found; nothing to migrate');
+      }
+      return 0;
+    }
+    case 'uninstall': {
+      const uninstaller = new Uninstaller();
+      const results = await uninstaller.uninstall({
+        target: args.target,
+        workspacePath: args.workspace,
+        global: args.global,
+        purgeAll: args.purgeAll,
+      });
+      for (const r of results) {
+        io.out(`uninstalled: ${r.target} (cleaned ${r.cleanedFiles.length} files)`);
+      }
+      return 0;
+    }
+  }
+}
 
 interface ParsedArgs {
   command: Command;
@@ -173,6 +260,12 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
     err: (line: string) => process.stderr.write(`${line}\n`)
   };
   const env = deps.env ?? process.env;
+
+  const firstArg = argv[0];
+  if (firstArg && (INSTALLER_COMMANDS as readonly string[]).includes(firstArg)) {
+    const installerArgs = parseInstallerArgs(firstArg as InstallerCommand, argv.slice(1));
+    return executeInstallerCommand(installerArgs, io);
+  }
 
   let args: ParsedArgs;
   try {
