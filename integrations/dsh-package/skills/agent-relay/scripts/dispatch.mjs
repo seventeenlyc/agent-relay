@@ -155,12 +155,14 @@ export class RelayDispatcher {
       for (let i = 0; i < stages.length; i++) {
         const stage = stages[i];
         const epoch = i + 1;
-        console.log(`\n▶ [阶段 ${epoch}/${stages.length}] 创建并打开新会话: "${stage.title}"`);
+        console.log(`\n▶ [阶段 ${epoch}/${stages.length}] 在 DSH 侧边栏创建独立会话: "${stage.title}"`);
 
         const sessionId = await this.createSession(stage.title);
-        const url = this.openWindow(sessionId);
-        console.log(`  -> 会话 ID: ${sessionId}`);
-        console.log(`  -> 已弹出独立窗口: ${url}`);
+        const url = `${BASE_URL}/#/${sessionId}`;
+        if (stage.openBrowser === true) {
+          this.openWindow(sessionId);
+        }
+        console.log(`  -> 会话 ID: ${sessionId} (已在左侧边栏静默挂载，不自动弹外置浏览器网页)`);
 
         // 注入前驱交接指纹信息
         let fullPrompt = stage.prompt;

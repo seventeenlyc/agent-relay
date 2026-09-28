@@ -77,9 +77,8 @@ async function createAndOpenSession(title, promptText) {
   // 2. 命名会话
   await rpc('session/rename', { args: { request: { sessionId, title } } });
 
-  // 3. 弹窗打开该会话
+  // 3. 在侧边栏静默物化（不弹出外置浏览器网页）
   const url = `${BASE_URL}/#/${sessionId}`;
-  exec(`start "" "${url}"`, { windowsHide: true }, () => {});
 
   // 4. 发送提示词给该会话中的独立 Agent
   await rpc('session/prompt', {

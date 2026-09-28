@@ -513,9 +513,6 @@ export class DshHandoffHook {
         userMessage: nextPrompt
       });
 
-      const { exec } = await import('node:child_process');
-      exec(`start "" "${result.url}"`, { windowsHide: true }, () => {});
-
       const handoffId = `handoff-${run.run_id}-ep${nextEpoch}-${Date.now()}`;
       db.prepare(`
         INSERT INTO session_chain (
@@ -532,7 +529,7 @@ export class DshHandoffHook {
         UPDATE runs SET current_session_id = ?, current_epoch = ?, handoff_count = handoff_count + 1, updated_at = ? WHERE run_id = ?
       `).run(result.sessionId, nextEpoch, Date.now(), run.run_id);
 
-      console.log(`[agent-relay-hook] ✅ 自动交接成功：新会话已物化并弹出 -> [${result.sessionId}] ${title}`);
+      console.log(`[agent-relay-hook] ✅ 自动交接成功：新会话已在侧边栏静默物化并启动 -> [${result.sessionId}] ${title}`);
     } catch (e) {
       console.error('[agent-relay-hook] 自动交接失败:', e);
     } finally {
