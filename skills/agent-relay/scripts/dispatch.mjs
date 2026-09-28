@@ -9,7 +9,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exec } from 'node:child_process';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -90,12 +89,6 @@ export class RelayDispatcher {
     return sessionId;
   }
 
-  openWindow(sessionId) {
-    const url = `${BASE_URL}/#/${sessionId}`;
-    exec(`start "" "${url}"`, { windowsHide: true }, () => {});
-    return url;
-  }
-
   async sendPrompt(sessionId, text) {
     return await this.rpc('session/prompt', {
       args: {
@@ -159,9 +152,6 @@ export class RelayDispatcher {
 
         const sessionId = await this.createSession(stage.title);
         const url = `${BASE_URL}/#/${sessionId}`;
-        if (stage.openBrowser === true) {
-          this.openWindow(sessionId);
-        }
         console.log(`  -> 会话 ID: ${sessionId} (已在左侧边栏静默挂载，不自动弹外置浏览器网页)`);
 
         // 注入前驱交接指纹信息
