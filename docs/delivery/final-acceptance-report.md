@@ -104,3 +104,9 @@ npm run eval
 # 3. 运行全系统 365+ 个测试用例的全量回归
 npm run verify:all
 ```
+
+## 7. 新增 `start` 入口与 DSH 插件边界
+
+`agent-relay start` 已接入现有 `RunController`，支持 `codex`、`claude`、`dsh` 三个单目标入口；它会持久化原始 prompt 与任务图，前台推进至终态，并在退出前关闭 runtime 与数据库。DSH 不再由核心 CLI 硬编码接入，而是通过 `integrations/dsh-plugin.mjs` 动态加载；安装器会把该入口写入 `.dsh/config.json`，卸载只移除 Agent Relay 自有项。
+
+本次新增验证包括 CLI 参数/任务文件、Codex mock runner 的前台完成、Claude/Codex 内置 runtime 与适配器契约、DSH plugin manifest/runtime/event bridge、安装器幂等注册，以及异常时的资源清理。真实 DSH Desktop 宿主加载仍需在目标宿主环境中单独验收，当前证据不越界宣称。

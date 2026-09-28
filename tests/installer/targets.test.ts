@@ -78,6 +78,9 @@ test('targets: DSH target installs plugin entry into .dsh/config.json', async ()
     assert.strictEqual(config.plugins.length, 1);
     assert.strictEqual(config.plugins[0].id, 'agent-relay');
     assert.strictEqual(config.plugins[0].managedBy, 'agent-relay');
+    assert.strictEqual(config.plugins[0].pluginId, 'agent-relay-dsh');
+    assert.ok(path.isAbsolute(config.plugins[0].entry));
+    assert.match(config.plugins[0].entry, /integrations[\\/]dsh-plugin\.mjs$/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

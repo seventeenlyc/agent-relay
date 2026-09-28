@@ -110,6 +110,23 @@ test('uninstaller: removes DSH plugin entries from .dsh/config.json while preser
   }
 });
 
+test('uninstaller: preserves an unmanaged plugin that happens to use the agent-relay id', async () => {
+  const dir = tempDir();
+  try {
+    fs.mkdirSync(path.join(dir, '.dsh'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.dsh', 'config.json'),
+      JSON.stringify({ plugins: [{ id: 'agent-relay', enabled: true, owner: 'user' }] })
+    );
+
+    await new Uninstaller().uninstall({ target: 'dsh', workspacePath: dir });
+    const config = JSON.parse(fs.readFileSync(path.join(dir, '.dsh', 'config.json'), 'utf8'));
+    assert.deepStrictEqual(config.plugins, [{ id: 'agent-relay', enabled: true, owner: 'user' }]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('uninstaller: purgeAll removes relay.db-wal and relay.db-shm alongside relay.db', async () => {
   const dir = tempDir();
   try {

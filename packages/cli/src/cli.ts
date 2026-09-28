@@ -12,6 +12,9 @@ import { renderChain } from './render.ts';
 import { Installer } from '../../installer/src/installer.ts';
 import { Uninstaller } from '../../installer/src/uninstaller.ts';
 import { MigrationEngine } from '../../installer/src/migration.ts';
+import { executeStart } from './start-run.ts';
+import { parseStartArgs } from './start.ts';
+import type { RelayRuntime, RuntimeFactoryOptions } from './runtime.ts';
 
 export interface CliIo {
   out(line: string): void;
@@ -21,12 +24,14 @@ export interface CliIo {
 export interface CliDeps {
   io?: CliIo;
   env?: NodeJS.ProcessEnv;
+  startRuntimeFactory?: (target: 'codex' | 'claude' | 'dsh', options: RuntimeFactoryOptions) => Promise<RelayRuntime> | RelayRuntime;
 }
 
 const USAGE = [
   '用法 (usage): agent-relay <command> [--run <id>] [--data-dir <path>] [options]',
   '',
   '命令:',
+  '  start     启动一个前台 run（--target=codex|claude|dsh，--workspace=<path>，--goal=<text>，--prompt=<text>）',
   '  status    显示状态卡（--json 输出结构化结果）',
   '  chain     显示旧→新会话链',
   '  pause     在下一安全节点暂停（不创建下一执行会话）',
@@ -262,6 +267,21 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<number
   const env = deps.env ?? process.env;
 
   const firstArg = argv[0];
+  if (firstArg === 'start') {
+    try {
+      const startArgs = parseStartArgs(argv.slice(1));
+      return executeStart(startArgs, {
+        dataDir: resolveDataDir(startArgs.dataDir, env),
+        io,
+        createRuntime: deps.startRuntimeFactory
+      });
+    } catch (err) {
+      io.err((err as Error).message);
+      io.err(USAGE);
+      return 1;
+    }
+  }
+
   if (firstArg && (INSTALLER_COMMANDS as readonly string[]).includes(firstArg)) {
     const installerArgs = parseInstallerArgs(firstArg as InstallerCommand, argv.slice(1));
     return executeInstallerCommand(installerArgs, io);

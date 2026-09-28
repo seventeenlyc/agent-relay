@@ -55,7 +55,22 @@ agent-relay install --target=claude --workspace=.
 agent-relay install --target=all --workspace=.
 ```
 
-### 2. 检查运行状态
+### 2. 启动三端前台长任务
+```bash
+# Codex CLI
+agent-relay start --target=codex --workspace=. --goal="完成搜索功能" --prompt="按任务目标开始执行"
+
+# Claude Code
+agent-relay start --target=claude --workspace=. --goal="完成搜索功能" --prompt="按任务目标开始执行"
+
+# DSH：安装器注册 integrations/dsh-plugin.mjs，启动时由 CLI 动态加载
+agent-relay install --target=dsh --workspace=.
+agent-relay start --target=dsh --workspace=. --goal="完成搜索功能" --prompt="按任务目标开始执行"
+```
+
+`start` 一次只允许一个目标写入同一规范化工作区；可用 `--tasks-file=<json>` 提供任务图，`--data-dir=<path>` 指定数据库目录。DSH 宿主事件桥只做观察和可选 JSONL 记录，当前仓库已验证插件契约与 mock SDK 加载，未把真实 DSH Desktop 宿主加载冒充为已验收能力。
+
+### 3. 检查运行状态
 ```bash
 # 查看当前工作区活动任务状态卡
 agent-relay status
@@ -64,7 +79,7 @@ agent-relay status
 agent-relay watch --interval 2000
 ```
 
-### 3. 控制任务生命周期
+### 4. 控制任务生命周期
 ```bash
 # 在当前工作单元完成后暂停，安全释放写权
 agent-relay pause

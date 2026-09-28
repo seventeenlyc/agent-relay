@@ -122,6 +122,16 @@ rl.on('line', (line) => {
         replyDelta = 'TASK_COMPLETED_SUCCESS';
       } else if (inputText.includes('echo:')) {
         replyDelta = inputText.replace('echo:', '').trim();
+      } else {
+        const taskMatch = inputText.match(/^TASK_ID:\s*(\S+)\s*$/m);
+        if (taskMatch) {
+          replyDelta = `UNIT_RESULT_START\n${JSON.stringify({
+            taskId: taskMatch[1],
+            status: 'completed',
+            evidenceHash: `mock-evidence-${taskMatch[1]}`,
+            summary: 'completed by mock Codex'
+          })}\nUNIT_RESULT_END`;
+        }
       }
 
       setTimeout(() => {

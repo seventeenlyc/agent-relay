@@ -3,6 +3,7 @@ export interface InstallOptions {
   global?: boolean;
   workspacePath?: string;
   cliScriptPath?: string;
+  pluginEntryPath?: string;
 }
 
 export interface UninstallOptions {

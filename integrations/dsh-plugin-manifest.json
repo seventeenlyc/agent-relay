@@ -1,0 +1,8 @@
+{
+  "id": "agent-relay-dsh",
+  "version": "0.1.0",
+  "protocolVersion": 1,
+  "target": "dsh",
+  "entry": "integrations/dsh-plugin.mjs",
+  "managedBy": "agent-relay"
+}

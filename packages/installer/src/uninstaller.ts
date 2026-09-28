@@ -137,7 +137,9 @@ export class Uninstaller {
           const json = JSON.parse(raw);
           if (Array.isArray(json.plugins)) {
             const origLen = json.plugins.length;
-            json.plugins = json.plugins.filter((p: any) => p.id !== 'agent-relay');
+            json.plugins = json.plugins.filter(
+              (p: any) => !(p.id === 'agent-relay' && (p.managedBy === 'agent-relay' || p.pluginId === 'agent-relay-dsh'))
+            );
             if (json.plugins.length !== origLen) {
               this.merger.backupFile(dshConfigPath);
               const tmpPath = `${dshConfigPath}.tmp`;

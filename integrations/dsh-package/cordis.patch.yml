@@ -1,0 +1,4 @@
+# Agent Relay DSH bundle patch.
+- insert:
+    - id: agent-relay-dsh
+      name: 'agent-relay-dsh'

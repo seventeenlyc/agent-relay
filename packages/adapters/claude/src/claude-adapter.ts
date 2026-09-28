@@ -237,6 +237,16 @@ export class ClaudeAdapter implements AgentRelayAdapter {
     return this.runner.terminateSession(sessionId);
   }
 
+  /** Stop every child process owned by this adapter before the foreground run exits. */
+  public async shutdown(): Promise<void> {
+    for (const [sessionId, session] of this.sessions) {
+      if (session.active) {
+        session.active = false;
+        this.runner.terminateSession(sessionId);
+      }
+    }
+  }
+
   public getHookHandler(): ClaudeHookHandler {
     return this.hookHandler;
   }
