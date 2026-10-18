@@ -9,76 +9,50 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
+import { RelayDatabase } from '../../../lib/relay-db.js';
+import { normalizeWorkspaceKey } from '../../../lib/workspace-key.js';
+import { pathToFileURL } from 'node:url';
+import { resolveDshUrl } from '../../../lib/connection.js';
+import { createAuthCookie, resolveWorkspaceId as findWorkspaceId } from '../../../lib/materializer.js';
 
-const BASE_URL = process.env.DSH_WEB_URL ?? 'http://127.0.0.1:19387';
-const AUTHORITY = new URL(BASE_URL).host;
-
-function decodeBase64Url(str) {
-  let b64 = str.replaceAll('-', '+').replaceAll('_', '/');
-  while (b64.length % 4) b64 += '=';
-  return Buffer.from(b64, 'base64');
-}
-
-function encodeBase64Url(buf) {
-  return buf.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-}
-
-function getAuthCookie() {
-  const credPath = path.join(os.homedir(), '.dsh', '.credentials.yaml');
-  if (!fs.existsSync(credPath)) throw new Error('未找到 ~/.dsh/.credentials.yaml 密钥文件');
-  const content = fs.readFileSync(credPath, 'utf8');
-  const match = content.match(/client-connection\/browser-session:[\s\S]*?secret:\s*([^\s\r\n]+)/);
-  if (!match) throw new Error('~/.dsh/.credentials.yaml 中缺少 browser-session 密钥');
-
-  const secretBytes = decodeBase64Url(match[1]);
-  const cName = 'dsh-auth-' + encodeBase64Url(createHash('sha256').update(AUTHORITY).digest());
-  const now = Date.now();
-  const payload = { version: 1, authority: AUTHORITY, issuedAt: now, expiresAt: now + 86400000 };
-  const body = encodeBase64Url(Buffer.from(JSON.stringify(payload), 'utf8'));
-  const sig = encodeBase64Url(createHmac('sha256', secretBytes).update(body).digest());
-  return `${cName}=v1.${body}.${sig}`;
-}
-
-function resolveWorkspaceId(workspacePath = process.cwd()) {
-  const wsJsonPath = path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
-  if (!fs.existsSync(wsJsonPath)) return null;
-  const data = JSON.parse(fs.readFileSync(wsJsonPath, 'utf8'));
-  const targetNorm = path.resolve(workspacePath).toLowerCase();
-  for (const [id, ws] of Object.entries(data?.tables?.workspaces ?? {})) {
-    if (typeof ws?.path === 'string' && path.resolve(ws.path).toLowerCase() === targetNorm) {
-      return id;
-    }
-  }
-  return data?.global?.workspaceIds?.[0] ?? null;
-}
 
 export class RelayDispatcher {
-  constructor(workspacePath = process.cwd()) {
+  constructor(workspacePath = process.cwd(), options = {}) {
     this.workspacePath = path.resolve(workspacePath);
-    this.workspaceId = resolveWorkspaceId(this.workspacePath);
+    this.workspaceId = findWorkspaceId(this.workspacePath);
     if (!this.workspaceId) throw new Error(`未在 DSH 中找到工作区: ${this.workspacePath}`);
-    this.cookie = getAuthCookie();
+    this.baseUrl = resolveDshUrl(options.webUrl);
+    this.authority = new URL(this.baseUrl).host;
+    this.cookie = createAuthCookie(this.authority);
+    if (!this.cookie) throw new Error('Cannot authenticate with DSH: missing browser-session secret');
+    this.maxWaitMs = options.maxWaitMs ?? 120000;
+    this.pollIntervalMs = options.pollIntervalMs ?? 1200;
   }
 
   async rpc(method, payload) {
-    const res = await fetch(`${BASE_URL}/api/${method}`, {
+    const res = await fetch(`${this.baseUrl}/api/${method}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Cookie': this.cookie,
-        'Host': AUTHORITY,
-        'Origin': BASE_URL
+        'Host': this.authority,
+        'Origin': this.baseUrl
       },
       body: JSON.stringify({
         type: 'client-request',
         rpcId: 'rpc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
         method,
         payload
-      })
+      }),
+      signal: AbortSignal.timeout(15000)
     });
-    return await res.json();
+    if (!res.ok) throw new Error(`${method} failed (HTTP ${res.status})`);
+    const response = await res.json();
+    if (!res.ok || !response.result?.ok) {
+      throw new Error(`${method} failed (HTTP ${res.status}): ${response.result?.error?.message ?? 'RPC rejected'}`);
+    }
+    return response;
   }
 
   async createSession(title) {
@@ -102,16 +76,27 @@ export class RelayDispatcher {
     });
   }
 
-  async waitSettled(sessionId, maxWaitMs = 120000) {
+  async waitSettled(sessionId, maxWaitMs = this.maxWaitMs ?? 120000) {
     const start = Date.now();
-    let wasRunning = false;
     while (Date.now() - start < maxWaitMs) {
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise((r) => setTimeout(r, this.pollIntervalMs ?? 1200));
       const listRes = await this.rpc('session/list', { args: { _request: { workspaceId: this.workspaceId } } });
       const item = listRes.result?.value?.items?.find((x) => x.sessionId === sessionId);
       if (!item) continue;
-      if (item.running) wasRunning = true;
-      if (wasRunning && !item.running) return item;
+      if (!item.running) {
+        const throughSeq = item.projections?.asOfSeq;
+        if (!Number.isSafeInteger(throughSeq)) throw new Error(`DSH session ${sessionId} has no durable history cursor`);
+        const page = await this.rpc('session/page', { args: { request: {
+          address: { kind: 'session', sessionId }, throughSeq, maxMessages: 10,
+        } } });
+        const events = (page.result?.value?.records ?? []).filter(r => r.type === 'event').map(r => r.event);
+        const lastStart = events.findLastIndex(e => e.type === 'turn/start');
+        const lastEnd = events.findLastIndex(e => e.type === 'turn/end');
+        if (lastEnd < 0 || lastEnd < lastStart) continue;
+        const reason = events[lastEnd].data?.reason?.kind;
+        if (reason !== 'completed') throw new Error(`DSH session ${sessionId} ended with ${reason ?? 'unknown reason'}`);
+        return item;
+      }
     }
     return null;
   }
@@ -121,15 +106,22 @@ export class RelayDispatcher {
    * @param {Array<{ title: string, prompt: string, wait?: boolean }>} stages
    */
   async runPipeline(stages, runId = 'relay-run-' + Date.now()) {
+    if (!Array.isArray(stages) || !stages.length || stages.some(s => !s || typeof s.title !== 'string' || typeof s.prompt !== 'string')) {
+      throw new TypeError('stages must be a non-empty array of title/prompt objects');
+    }
+    if (stages.slice(0, -1).some(s => s.wait === false)) {
+      throw new Error('Only the final stage may run in background; handoffs require completion');
+    }
     console.log(`\n🚀 [Agent Relay Dispatcher] 启动多会话接力流水线 (Run: ${runId})`);
     const results = [];
     let prevSessionId = null;
 
     // 打开 relay.db 记录链
     const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
-    const dataDir = path.join(localAppData, 'agent-relay');
+    const dataDir = process.env.AGENT_RELAY_DATA_DIR ?? path.join(localAppData, 'agent-relay');
     fs.mkdirSync(dataDir, { recursive: true });
-    const db = new DatabaseSync(path.join(dataDir, 'relay.db'));
+    const db = new RelayDatabase({ dbPath: path.join(dataDir, 'relay.db') });
+    let inserted = false;
 
     try {
       db.prepare(`
@@ -138,12 +130,13 @@ export class RelayDispatcher {
           provider, model, effort, current_session_id, current_epoch,
           handoff_count, unit_count, current_session_unit_count, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id) DO UPDATE SET updated_at = excluded.updated_at
       `).run(
-        runId, 'ws-relay', this.workspacePath, stages[0]?.title ?? 'Relay Pipeline',
+        runId, normalizeWorkspaceKey(this.workspacePath), this.workspacePath, stages[0]?.title ?? 'Relay Pipeline',
         'RUNNING', 'antigravity', 'gemini-3.8-flash-high', 'high', 'pending',
         1, 0, stages.length, 1, Date.now(), Date.now()
       );
+
+      inserted = true;
 
       for (let i = 0; i < stages.length; i++) {
         const stage = stages[i];
@@ -151,7 +144,9 @@ export class RelayDispatcher {
         console.log(`\n▶ [阶段 ${epoch}/${stages.length}] 在 DSH 侧边栏创建独立会话: "${stage.title}"`);
 
         const sessionId = await this.createSession(stage.title);
-        const url = `${BASE_URL}/#/${sessionId}`;
+        const url = `${this.baseUrl}/#/${sessionId}`;
+        db.prepare('UPDATE runs SET current_session_id = ?, current_epoch = ?, handoff_count = ?, updated_at = ? WHERE run_id = ?')
+          .run(sessionId, epoch, i, Date.now(), runId);
         console.log(`  -> 会话 ID: ${sessionId} (已在左侧边栏静默挂载，不自动弹外置浏览器网页)`);
 
         // 注入前驱交接指纹信息
@@ -166,18 +161,19 @@ export class RelayDispatcher {
         // 记录 session_chain
         db.prepare(`
           INSERT INTO session_chain (
-            run_id, sequence, prev_session_id, next_session_id,
+            link_id, run_id, sequence, prev_session_id, next_session_id,
             adapter, provider, model, effort, epoch, handoff_id, reason, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          runId, epoch, prevSessionId, sessionId,
+          randomUUID(), runId, epoch, prevSessionId, sessionId,
           'dsh', 'antigravity', 'gemini-3.8-flash-high', 'high', epoch,
           `handoff-${runId}-ep${epoch}`, prevSessionId ? 'unit_completed' : 'initial_spawn', Date.now()
         );
 
         if (stage.wait !== false) {
           console.log(`  -> 正在等待该会话独立 Agent 执行完毕...`);
-          await this.waitSettled(sessionId);
+          const settled = await this.waitSettled(sessionId);
+          if (!settled) throw new Error(`DSH stage ${epoch} timeout: ${sessionId}; later stages were not dispatched`);
           console.log(`  ✅ 阶段 ${epoch} 执行完成！`);
         } else {
           console.log(`  ⚡ 已在后台持续执行（非阻塞模式）`);
@@ -191,9 +187,13 @@ export class RelayDispatcher {
         `).run(sessionId, epoch, i, Date.now(), runId);
       }
 
-      db.prepare(`UPDATE runs SET state = 'COMPLETED', updated_at = ? WHERE run_id = ?`).run(Date.now(), runId);
-      console.log(`\n🎉 [Agent Relay Dispatcher] 全流程多会话接力全部顺利达成！`);
-      return { runId, stages: results };
+      const state = stages.at(-1).wait === false ? 'RUNNING' : 'COMPLETED';
+      db.prepare('UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?').run(state, Date.now(), runId);
+      console.log(state === 'COMPLETED' ? '\nAgent Relay pipeline completed.' : '\nAgent Relay final stage is running in background.');
+      return { runId, state, stages: results };
+    } catch (error) {
+      if (inserted) db.prepare("UPDATE runs SET state = 'RECOVERY_REQUIRED', updated_at = ? WHERE run_id = ?").run(Date.now(), runId);
+      throw error;
     } finally {
       db.close();
     }
@@ -201,7 +201,7 @@ export class RelayDispatcher {
 }
 
 // CLI 执行入口
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const rawInput = process.argv[2];
   if (!rawInput) {
     console.log('Usage: node dispatch.mjs \'<stages_json_or_file>\'');

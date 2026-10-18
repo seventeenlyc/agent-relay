@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:dsh": "node scripts/build-dsh-package.mjs",
     "test": "node --experimental-strip-types --test tests/adapters/*.test.ts tests/contracts/*.test.ts tests/policy/*.test.ts tests/run/*.test.ts tests/scenarios/*.test.ts tests/transactions/*.test.ts tests/workspace/*.test.ts tests/recovery/*.test.ts tests/eval/*.test.ts tests/installer/*.test.ts tests/acceptance/*.test.ts tests/cli/*.test.ts tests/integrations/*.test.ts",
     "test:recovery": "node --experimental-strip-types --test tests/recovery/*.test.ts",
     "test:contracts": "node --experimental-strip-types --test tests/contracts/*.test.ts",

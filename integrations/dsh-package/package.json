@@ -1,8 +1,11 @@
 {
   "name": "agent-relay-dsh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent Relay DSH host plugin",
   "type": "module",
+  "scripts": {
+    "prepack": "node ../../scripts/build-dsh-package.mjs"
+  },
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -21,8 +24,8 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20.0.0",
-    "dsh": ">=0.1.5-rc.1"
+    "node": ">=22.13.0",
+    "dsh": ">=0.2.1-rc.2"
   },
   "dsh": {
     "bundle": {

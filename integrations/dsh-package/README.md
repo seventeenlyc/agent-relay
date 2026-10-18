@@ -1,5 +1,14 @@
 # agent-relay-dsh
 
+## 兼容更新 0.1.1（2026-10-18）
+
+适配官方 DSH Desktop 0.2.1-rc.2：通过宿主 `webServer.getOrigin()` 发现动态端口，修复 Windows 调度入口；只有持久化任务结束原因是 `completed` 才判定成功。超时、错误、取消会停止后续阶段并保留 `RECOVERY_REQUIRED`。末阶段设 `wait: false` 时保持 `RUNNING`。
+
+安装包包含完整数据库迁移和规范化工作区键，首次运行可创建数据库；不同工作区的活动任务互不阻塞。运行前须在 DSH 中注册目标项目。支持显式 `DSH_WEB_URL`。
+
+仓库根目录执行 `npm run build:dsh` 可生成包内依赖；`npm pack ./integrations/dsh-package` 会自动生成。需要 Node.js 22.13 或更新版本，以及 DSH Desktop 0.2.1-rc.2 或更新版本。
+
+
 <p align="center">
   <strong>DSH 桌面端多会话物理隔离与自动化侧边栏静默接力插件</strong><br>
   <em>Multi-Session Physical Isolation, Silent Sidebar Handoffs & State Machine Persistence for DeepSeek Harness (DSH) Desktop</em>
