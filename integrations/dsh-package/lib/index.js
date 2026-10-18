@@ -4,13 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { publishDshEndpoint } from './connection.js';
 
 export const name = 'agent-relay';
 export const inject = ['sessions'];
 
 export const pluginManifest = Object.freeze({
   id: 'agent-relay-dsh',
-  version: '0.1.0',
+  version: '0.1.1',
   protocolVersion: 1,
   target: 'dsh'
 });
@@ -574,6 +575,9 @@ export function apply(ctx) {
   }
 
   if (hasInject) {
+    ctx.inject(['webServer'], (c) => {
+      c.effect(() => publishDshEndpoint(c.webServer.getOrigin()));
+    });
     ctx.inject(['tools'], (c) => {
       registerRelayTools(c.tools);
     });

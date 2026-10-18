@@ -54,10 +54,11 @@ Agent Relay 是专为长上下文、长链路工程任务设计的**多会话物
 
 ### 方式一：调用内嵌调度器执行多阶段接力（最简单、全自动）
 
-在 Node.js 或终端中直接调用内嵌的 `dispatch.mjs`：
+在 Node.js 或终端中调用完整插件包内的 `dispatch.mjs`，不要单独复制脚本。下例使用当前用户的 desktop profile，工作目录必须是 DSH 中已注册的项目。插件自动发现宿主动态端口，也可显式设置 `DSH_WEB_URL`；未发现运行实例时会报错。首次运行会初始化 Relay 数据库。只有持久化 `turn/end` 为 `completed` 才交接下一阶段；超时、取消或错误会停止并标记 `RECOVERY_REQUIRED`，后台末阶段保持 `RUNNING`。
 
-```bash
-node "C:\Users\21666\.agents\skills\agent-relay\scripts\dispatch.mjs" '[
+```powershell
+$relayPackage = Join-Path $env:USERPROFILE '.dsh/profiles/desktop/node_modules/agent-relay-dsh'
+node (Join-Path $relayPackage 'skills/agent-relay/scripts/dispatch.mjs') '[
   {
     "title": "🚀 [Relay] Epoch 1: 架构与拓扑扫描",
     "prompt": "作为 Epoch 1 独立工作者，扫描当前工作区插件并输出结果。如需并发调研多个子目录，请在会话内使用子代理消化。"
@@ -71,7 +72,7 @@ node "C:\Users\21666\.agents\skills\agent-relay\scripts\dispatch.mjs" '[
 
 调度器会自动：
 1. 分别在 DSH 桌面端创建 `Epoch 1` 和 `Epoch 2` 独立会话；
-2. 自动在桌面弹出打开两扇会话窗口；
+2. 在侧边栏静默创建会话，不弹出外部浏览器窗口；
 3. 将任务投递至各自会话中等待自主推理完成；
 4. 将父子链与交接证据记录到 `relay.db`。
 
@@ -82,7 +83,13 @@ node "C:\Users\21666\.agents\skills\agent-relay\scripts\dispatch.mjs" '[
 当作为主 Agent 接到用户多阶段任务需求时，直接引用 `RelayDispatcher` 模块：
 
 ```javascript
-import { RelayDispatcher } from 'G:/杂项/工具开发/skills/agent-relay/scripts/dispatch.mjs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const dispatcherPath = path.join(os.homedir(), '.dsh', 'profiles', 'desktop',
+  'node_modules', 'agent-relay-dsh', 'skills', 'agent-relay', 'scripts', 'dispatch.mjs');
+const { RelayDispatcher } = await import(pathToFileURL(dispatcherPath).href);
 
 const dispatcher = new RelayDispatcher(process.cwd());
 

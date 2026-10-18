@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { resolveDshUrl } from './connection.js';
 
 function decodeBase64Url(str) {
   let b64 = str.replaceAll('-', '+').replaceAll('_', '/');
@@ -43,8 +44,6 @@ export function resolveWorkspaceId(workspacePath) {
         return id;
       }
     }
-    const ids = data?.global?.workspaceIds;
-    if (Array.isArray(ids) && ids.length > 0) return ids[0];
   } catch {
     // Ignore storage read error
   }
@@ -72,7 +71,7 @@ export function createAuthCookie(authority) {
 
 export class DshSessionMaterializer {
   constructor(customUrl) {
-    const raw = customUrl ?? process.env.DSH_WEB_URL ?? 'http://127.0.0.1:19387';
+    const raw = resolveDshUrl(customUrl);
     const parsed = new URL(raw);
     this.baseUrl = `${parsed.protocol}//${parsed.host}`;
     this.authority = parsed.host;
@@ -116,14 +115,14 @@ export class DshSessionMaterializer {
     });
 
     const createJson = await createRes.json();
-    if (!createJson.result?.ok) {
+    if (!createRes.ok || !createJson.result?.ok) {
       throw new Error(`session/create failed: ${createJson.result?.error?.message ?? JSON.stringify(createJson)}`);
     }
 
     const sessionId = createJson.result.value.sessionId;
 
     // 2. Set Session Title
-    await fetch(`${this.baseUrl}/api/session/rename`, {
+    const renameRes = await fetch(`${this.baseUrl}/api/session/rename`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -146,6 +145,9 @@ export class DshSessionMaterializer {
       })
     });
 
+    const renameJson = await renameRes.json();
+    if (!renameRes.ok || !renameJson.result?.ok) throw new Error('session/rename failed');
+
     // 3. Send Prompt via official session/prompt API
     const promptText =
       options.userMessage ??
@@ -153,7 +155,7 @@ export class DshSessionMaterializer {
         options.handoffInfo ? '交接信息:\n```json\n' + JSON.stringify(options.handoffInfo, null, 2) + '\n```' : ''
       }`;
 
-    await fetch(`${this.baseUrl}/api/session/prompt`, {
+    const promptRes = await fetch(`${this.baseUrl}/api/session/prompt`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -177,6 +179,9 @@ export class DshSessionMaterializer {
         }
       })
     });
+
+    const promptJson = await promptRes.json();
+    if (!promptRes.ok || !promptJson.result?.ok) throw new Error('session/prompt failed');
 
     return {
       sessionId,
