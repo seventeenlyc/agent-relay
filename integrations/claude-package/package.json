@@ -1,0 +1,11 @@
+{
+  "name": "agent-relay-claude-hook",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Task-continuity-aware Claude Code UserPromptSubmit hook",
+  "type": "module",
+  "exports": { "./topic-judge": "./lib/topic-judge.js" },
+  "files": ["lib", "README.md", "LICENSE"],
+  "license": "MIT",
+  "engines": { "node": ">=20" }
+}
