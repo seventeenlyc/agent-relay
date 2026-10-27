@@ -4,7 +4,7 @@
 
 Agent Relay 为 Claude Code、Codex CLI 和 DeepSeek Harness（DSH）提供多会话接力能力。它通过原始输入账本、任务图快照、交接校验和 CAS 租约协调不同阶段，减少长会话反复压缩后产生的需求漂移，并保留可查询的执行链。
 
-本文于 **2026-10-20** 对照公开主线、包清单和 DSH 发布说明核对。当前可下载的宿主插件是 DSH v0.1.1；Claude/Codex 可使用主线源码 CLI 适配器，独立插件包及 Codex 压缩交接仍属于本地开发内容。兼容范围见[适配版本](#适配版本)。
+截至 **2026-10-27**，三个独立插件包均可从 npm 安装：`agent-relay-claude@0.1.0`、`@zwc_seventeen17/agent-relay-codex@0.1.1` 和 `agent-relay-dsh@0.1.1`。仓库根目录的源码 CLI 与这些宿主插件是不同入口；兼容范围见[适配版本](#适配版本)。
 
 ## 插件优势
 
@@ -20,6 +20,18 @@ Agent Relay 为 Claude Code、Codex CLI 和 DeepSeek Harness（DSH）提供多�
 原始输入以追加记录保存；修订可通过 `supersedes` 关联被替代输入，推导新约束时保留历史。任务阶段（Epoch）用于分析、实现、验收等较大的里程碑。阶段内的文件读取、局部测试通常在当前阶段完成，无需每次操作都新建会话。
 
 适合多阶段开发、重构、跨领域任务及需要检查交接证据的工程工作。新会话不能替代测试、代码评审或工作区隔离。
+
+## 从 npm 安装插件
+
+先安装并登录对应宿主，再按需安装插件包。以下命令使用 npm 官方仓库；三个包可分别安装，不需要安装名为 `agent-relay` 的其他项目。
+
+| 宿主 | 安装命令 | 安装后的接入 |
+| --- | --- | --- |
+| Claude Code | `npm install -g agent-relay-claude@0.1.0` | 在 Claude Code 的 MCP 配置中使用 `agent-relay-claude-mcp --mcp-stdio`；见 [Claude 插件说明](https://www.npmjs.com/package/agent-relay-claude) |
+| Codex CLI | `npm install -g @zwc_seventeen17/agent-relay-codex@0.1.1` | MCP 命令为 `agent-relay-codex-mcp --mcp-stdio`；完整插件还需加载包内钩子并在 Codex 中信任；见 [Codex 插件说明](https://www.npmjs.com/package/@zwc_seventeen17/agent-relay-codex) |
+| DSH Desktop | `npm install agent-relay-dsh@0.1.1` | npm 只安装包文件，仍需由 DSH 宿主加载并启用插件；见[下方 DSH 安装说明](#dsh-desktop)和 [DSH npm 包](https://www.npmjs.com/package/agent-relay-dsh) |
+
+Claude/Codex 的全局命令需在宿主进程的 `PATH` 中可见。仅安装 npm 包不会自动写入宿主的 MCP 配置；Codex 仅配置 MCP 也不会启用生命周期钩子。三个 npm 插件建议使用 **Node.js ≥22.13.0**：Claude 0.1.0 的包清单虽然声明 ≥20，但 MCP 入口依赖 `node:sqlite`，Node 20 无法运行该入口；Node 22.13 起该模块不再需要实验性启动参数。参见 [Node.js SQLite 文档](https://nodejs.org/download/release/latest-v22.x/docs/api/sqlite.html)。
 
 ## 快速开始：从源码运行
 
@@ -37,7 +49,7 @@ node --version
 
 当前根包 `agent-relay-workspace` 是私有工作区包，没有注册 `agent-relay` 命令。请使用 `node bin/agent-relay.mjs`，无需 `npm link`。
 
-**不要通过 `npm install -g agent-relay` 安装本项目：npm 上该名称对应另一个仓库。** DSH 用户可以直接安装[已发布插件包](#dsh-desktop)，无需从源码启动。
+**不要通过 `npm install -g agent-relay` 安装本项目：npm 上该名称对应另一个仓库。** 插件请使用[上方三个已发布的包名](#从-npm-安装插件)。
 
 ### 2. 启动第一个任务
 
@@ -119,21 +131,17 @@ node bin/agent-relay.mjs disable --data-dir ./relay-data
 
 公开主线包含这两个平台的源码适配器，使用上文的 `node bin/agent-relay.mjs start --target=claude` 或 `--target=codex` 完整示例启动。Claude 适配器通过 headless `stream-json` 执行，Codex 适配器通过 `codex app-server --stdio` 创建独立线程。
 
-当前公开主线没有独立的 `integrations/claude-package`、`integrations/codex-package`，不能按这些路径配置 MCP。源码安装器写入集成配置也不等于宿主已经加载插件或生命周期钩子；以实际源码入口与宿主发现结果为准。CLI 线程持久化不保证桌面应用会自动打开或展示相应聊天。
+独立的 Claude/Codex 插件已发布到 npm，使用[上方包名](#从-npm-安装插件)安装；公开主线的源码 CLI 仍使用 `node bin/agent-relay.mjs`。源码安装器写入集成配置也不等于宿主已经加载插件或生命周期钩子；以实际源码入口与宿主发现结果为准。CLI 线程持久化不保证桌面应用会自动打开或展示相应聊天。
 
-本地开发版本另有 MCP 控制服务与 Codex 成功压缩后交接：成功压缩默认累计三次后请求新聊天，需 `PostCompact`、`SessionStart(compact)`、钩子信任和宿主原生聊天创建工具。该功能尚未随公开主线或 DSH v0.1.1 发布；它也不代表压缩前零损失交接。待对应代码发布后，应按其包清单和安装说明使用。
+Codex npm 插件包含 MCP 控制服务与成功压缩后交接钩子：成功压缩默认累计三次后请求新聊天，需 `PostCompact`、`SessionStart(compact)`、钩子信任和宿主原生聊天创建工具。该能力不属于 DSH v0.1.1 包，也不代表压缩前零损失交接；仅挂载 MCP 时不会安装生命周期钩子。
 
 ### DSH Desktop
 
-已发布的 **Agent Relay DSH v0.1.1** 面向 **DSH ≥0.2.1-rc.2、Node.js ≥22.13.0**。通过 DSH 插件安装器安装 [Release 中的预构建包](https://github.com/seventeenlyc/agent-relay/releases/tag/v0.1.1)，同页提供 `SHA256SUMS`：
-
-```bash
-dsh plugin --profile desktop add https://github.com/seventeenlyc/agent-relay/releases/download/v0.1.1/agent-relay-dsh-0.1.1.tgz
-```
+已发布的 **Agent Relay DSH v0.1.1** 面向 **DSH ≥0.2.1-rc.2、Node.js ≥22.13.0**。可以从 [npm](https://www.npmjs.com/package/agent-relay-dsh) 安装包文件，或使用 [GitHub Release 预构建包](https://github.com/seventeenlyc/agent-relay/releases/tag/v0.1.1)（同页提供 `SHA256SUMS`）。对于由 Electron 应用管理的 Desktop profile，还需在 DSH Desktop 的插件管理器中加载并启用；当前 DSH CLI 会拒绝直接对该 profile 执行 `dsh plugin --profile desktop add`。
 
 使用目标 Desktop profile，并先在 DSH 中注册目标项目。插件通过宿主会话接口创建和派发独立会话，可在宿主界面查看；它支持实际执行，不只是事件观察。v0.1.1 从宿主发现动态 HTTP 地址，也支持显式设置 `DSH_WEB_URL`。
 
-该发布包已包含运行所需的生成文件。源码 `install --target=dsh` 写入的是另一套集成配置，不能代替 DSH 插件安装器。DSH v0.1.1 发布包不包含独立的 Codex 压缩交接改动。
+npm 包和 Release 包均包含运行所需的生成文件。源码 `install --target=dsh` 写入的是另一套集成配置，不能代替 DSH 插件安装器。DSH v0.1.1 发布包不包含独立的 Codex 压缩交接改动。
 
 安装并启用插件后，保持 DSH Desktop 运行，在已注册项目目录保存 `dsh-stages.json`：
 
@@ -199,7 +207,7 @@ DSH 插件提供以下六个工具。具体工具名可能带有宿主前缀；�
 
 数据目录保存 `relay.db` 等运行记录。示例 `./relay-data` 相对于执行命令的当前目录解析；跨终端或 MCP 使用时推荐绝对路径。
 
-Codex 压缩交接的状态目录与阈值设置属于尚未公开的开发版本，当前主线不提供对应配置入口。
+Codex npm 插件的压缩交接状态目录与阈值由插件环境变量配置；当前公开主线的源码 CLI 不提供对应入口。参见 [Codex 插件说明](https://www.npmjs.com/package/@zwc_seventeen17/agent-relay-codex)。
 
 ## 卸载与数据保留
 
@@ -220,9 +228,9 @@ node bin/agent-relay.mjs uninstall --target=claude --workspace=.
 | 组件 | 当前版本或历史验证环境 | 能力与兼容边界 |
 | --- | --- | --- |
 | 源码工作区 / CLI | 根 `package.json` 为 `0.1.0`；建议 Node.js 24.x | 原生 TypeScript 与 SQLite；不是已发布的全局 CLI |
-| Claude 源码适配器 | 协议探针记录 Claude Code `2.1.274`；源码建议 Node 24.x | 使用 headless `stream-json`；未确定完整功能的最低宿主版本，独立 MCP 包未随主线发布 |
-| Codex 源码适配器 | 基础协议探针记录 Codex CLI `0.144.4`；源码建议 Node 24.x | 基础线程派发依赖 app-server；独立插件与压缩交接未随主线发布，尚无统一最低宿主版本结论 |
-| DSH 发布包 | `agent-relay-dsh` **v0.1.1**；Node ≥22.13.0、DSH ≥0.2.1-rc.2 | 通过 DSH 宿主接口执行真实会话；以对应 Release 的清单与验证范围为准 |
+| Claude 源码适配器 / npm 插件 | 协议探针记录 Claude Code `2.1.274`；源码建议 Node 24.x；`agent-relay-claude@0.1.0` 实际需 Node ≥22.13.0 | 使用 headless `stream-json`；包清单的 Node ≥20 声明低于 MCP 入口实际要求，未确定完整功能的最低宿主版本 |
+| Codex 源码适配器 / npm 插件 | 基础协议探针记录 Codex CLI `0.144.4`；源码建议 Node 24.x；`@zwc_seventeen17/agent-relay-codex@0.1.1` 要求 Node ≥22.13.0 | 基础线程派发依赖 app-server；压缩交接需要插件钩子和宿主原生聊天创建工具，尚无统一最低宿主版本结论 |
+| DSH 发布包 | `agent-relay-dsh` **v0.1.1**；Node ≥22.13.0、DSH ≥0.2.1-rc.2 | 通过 DSH 宿主接口执行真实会话；npm 安装后仍需宿主加载，以对应包清单与验证范围为准 |
 
 探针中的宿主版本是历史测试点，不表示该版本以上的所有组合均已验收。源码、本地插件和 DSH Release 可能不包含同一组改动。`docs/delivery` 中早期的“v1.0”交付文档不能用作当前包版本依据。
 
@@ -231,7 +239,7 @@ node bin/agent-relay.mjs uninstall --target=claude --workspace=.
 ### 自动交接的验证范围
 
 - **任务阶段接力**：由控制器、调度器及宿主事件推进，检查运行终态、会话链和产物确认结果。
-- **Codex 成功压缩后交接**：仅存在于本地开发版本，不属于当前公开主线或 DSH 发布包的能力。
+- **Codex 成功压缩后交接**：Codex npm 包包含所需钩子；需宿主加载、信任并提供原生聊天创建工具。它不属于 DSH 发布包的能力。
 - **跨领域 / Marker 交接**：依赖平台事件、标记识别和策略，不能保证任意自然语言领域切换都触发。
 - **DSH v0.1.1 发布验证**：发布说明记录 `392/392` 测试、脱离源码目录的包检查及此前的双会话产物接力；自动压缩与跨领域钩子未单独验收。
 
@@ -258,13 +266,13 @@ npm run verify:all
 ## 文档与许可证
 
 - [Agent Relay 技能规范](skills/agent-relay/SKILL.md)
-- [DSH 插件说明](integrations/dsh-package/README.md)
+- [DSH npm 插件说明](https://www.npmjs.com/package/agent-relay-dsh)
 - [Codex 协议探针](docs/probes/codex.md)
 - [Claude Code 协议探针](docs/probes/claude.md)
 - [DSH 早期协议探针](docs/probes/dsh.md)
 - [早期交付说明（历史记录）](docs/delivery/release-notes-v1.0.md)
 - [DSH v0.1.1 发布说明与下载](https://github.com/seventeenlyc/agent-relay/releases/tag/v0.1.1)
 
-DSH 插件包清单声明 MIT；许可正文见 [DSH 插件 LICENSE](integrations/dsh-package/LICENSE)。
+三个 npm 插件包的清单均声明 MIT；许可正文随包提供。
 
 [GitHub](https://github.com/seventeenlyc/agent-relay) · [Issues](https://github.com/seventeenlyc/agent-relay/issues)
